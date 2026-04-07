@@ -92,13 +92,21 @@
                         <input type="range" id="colorFidelity" value="20" min="0" max="50" step="5">
                         <span class="range-value"><span id="colorFidelityValue">20</span>%</span>
                     </div>
-                    <div class="setting-hint">生成后仍可实时调节，无需重新生成</div>
+                    <div class="setting-row">
+                        <label>颜色匹配</label>
+                        <select id="indexMode">
+                            <option value="palette">粗略（Eagle 内置颜色，快）</option>
+                            <option value="sampled">精确（重建颜色索引，首次慢）</option>
+                        </select>
+                    </div>
+                    <div class="setting-hint">生成后仍可实时调节色彩还原度，无需重新生成</div>
                 </div>
                 <div class="settings-info">
                     <div class="estimate" id="estimate"></div>
                     <div class="actions">
                         <button id="btnGenerate" class="btn-primary">生成当前</button>
                         <button id="btnGenerateAll" class="btn-secondary">全部生成</button>
+                        <button id="btnRebuildIndex" class="btn-secondary" style="display:none">重建索引 (1:1)</button>
                         <button id="btnSave" class="btn-secondary" disabled>保存到 Eagle</button>
                         <button id="btnSaveAll" class="btn-secondary" disabled style="display:none">全部保存到 Eagle</button>
                     </div>
@@ -111,7 +119,28 @@
 
             <div id="preview" class="preview">
                 <canvas id="outputCanvas"></canvas>
+                <div id="emptyState" class="empty-state">
+                    <div class="empty-state-icon">
+                        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                            <rect x="6" y="10" width="36" height="28" rx="3" stroke="currentColor" stroke-width="2" fill="none"/>
+                            <circle cx="18" cy="22" r="4" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                            <path d="M6 32l10-8 6 5 8-10 12 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                        </svg>
+                    </div>
+                    <div class="empty-state-text">请在 Eagle 中选中图片后打开插件</div>
+                </div>
                 <div class="zoom-hint">滚轮缩放 / 拖拽平移</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom confirm modal -->
+    <div id="modalOverlay" class="modal-overlay" style="display:none">
+        <div class="modal-box">
+            <div class="modal-body" id="modalBody"></div>
+            <div class="modal-actions">
+                <button class="btn-secondary" id="modalCancel">取消</button>
+                <button class="btn-primary" id="modalConfirm">确定</button>
             </div>
         </div>
     </div>

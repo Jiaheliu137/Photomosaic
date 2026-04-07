@@ -128,7 +128,8 @@ function loadImage(src) {
 // Tile database: use Eagle's built-in palettes (no image loading)
 // ============================================================
 
-function buildTileDatabase(items, onProgress) {
+// Palette mode: use Eagle's pre-computed color palettes (fast, no I/O)
+function buildTileDatabasePalette(items, onProgress) {
     const tiles = [];
     const imageExts = new Set(['jpg', 'jpeg', 'png', 'bmp', 'webp', 'gif']);
 
@@ -174,11 +175,76 @@ function buildTileDatabase(items, onProgress) {
     return tiles;
 }
 
+// Sampled mode: load thumbnails, center-crop to tileAspect, sample average color (accurate)
+async function buildTileDatabaseSampled(items, tileAspect, onProgress) {
+    const candidates = [];
+    const imageExts = new Set(['jpg', 'jpeg', 'png', 'bmp', 'webp', 'gif']);
+
+    for (const item of items) {
+        if (!imageExts.has((item.ext || '').toLowerCase())) continue;
+        const imgPath = item.thumbnailPath || item.filePath;
+        if (!imgPath) continue;
+        candidates.push({ id: item.id, imgPath: 'file:///' + imgPath.replace(/\\/g, '/') });
+    }
+
+    const sampleCanvas = document.createElement('canvas');
+    const sampleCtx = sampleCanvas.getContext('2d');
+    const tiles = [];
+
+    for (let i = 0; i < candidates.length; i++) {
+        if (i % 100 === 0 && onProgress) {
+            onProgress(i, candidates.length, `采样缩略图: ${i}/${candidates.length}`);
+            await new Promise(r => setTimeout(r, 0));
+        }
+
+        let img;
+        try { img = await loadImage(candidates[i].imgPath); } catch { continue; }
+
+        const imgAspect = img.width / img.height;
+        let sx, sy, sw, sh;
+        if (imgAspect > tileAspect) {
+            sh = img.height; sw = Math.round(sh * tileAspect);
+            sx = Math.round((img.width - sw) / 2); sy = 0;
+        } else {
+            sw = img.width; sh = Math.round(sw / tileAspect);
+            sx = 0; sy = Math.round((img.height - sh) / 2);
+        }
+
+        sampleCanvas.width = sw;
+        sampleCanvas.height = sh;
+        sampleCtx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+        const data = sampleCtx.getImageData(0, 0, sw, sh).data;
+
+        let rSum = 0, gSum = 0, bSum = 0, count = 0;
+        const stride = Math.max(1, Math.floor(data.length / 4 / 2000)) * 4;
+        for (let j = 0; j < data.length; j += stride) {
+            rSum += data[j]; gSum += data[j + 1]; bSum += data[j + 2];
+            count++;
+        }
+
+        const avgR = Math.round(rSum / count);
+        const avgG = Math.round(gSum / count);
+        const avgB = Math.round(bSum / count);
+
+        tiles.push({
+            id: candidates[i].id,
+            imgPath: candidates[i].imgPath,
+            rgb: [avgR, avgG, avgB],
+            lab: rgbToLab(avgR, avgG, avgB)
+        });
+    }
+
+    if (onProgress) {
+        onProgress(candidates.length, candidates.length, `索引完成: ${tiles.length} 张有效瓦片`);
+    }
+    return tiles;
+}
+
 // ============================================================
 // Main generation pipeline (accepts external kdRoot)
 // ============================================================
 
-async function generateMosaic(targetImg, tiles, kdRoot, gridCols, tileW, tileH, repeatDistance, onProgress, onVisualUpdate) {
+async function generateMosaic(targetImg, tiles, kdRoot, gridCols, tileW, tileH, repeatDistance, onProgress, onVisualUpdate, shouldCancel) {
     const tileRatio = tileH / tileW;
     const aspect = targetImg.height / targetImg.width;
     const gridRows = Math.max(1, Math.round((gridCols * aspect) / tileRatio));
@@ -265,6 +331,9 @@ async function generateMosaic(targetImg, tiles, kdRoot, gridCols, tileW, tileH, 
     let cellsDone = 0;
 
     for (let row = 0; row < gridRows; row++) {
+        if (shouldCancel && shouldCancel()) {
+            throw new Error('CANCELLED');
+        }
         for (let col = 0; col < gridCols; col++) {
             const idx = row * gridCols + col;
 
@@ -472,12 +541,17 @@ let liveBaseCanvas = null;
 
 // Folder & save tracking
 let mosaicFolderId = null;
+let pluginPath = null;
+let currentLibraryName = null; // readable library name for cache folder
+let currentLibraryId = null;   // hash for internal comparison
 
 // Caches
 let cachedBase = null;
 let cachedBaseIndex = -1;
 let cachedTargetImg = null;
 let cachedTargetIndex = -1;
+// Per-aspect tile index cache: Map<aspectKey, {tiles, kdRoot}>
+const tileIndexCache = new Map();
 let cachedTiles = null;
 let cachedKdRoot = null;
 
@@ -556,6 +630,20 @@ function getSettingsForItem(index) {
 // Estimate panel
 // ============================================================
 
+function getCacheStatusLine(shapeStr) {
+    const mode = getIndexMode();
+    if (mode === 'palette') {
+        return '<span style="color:var(--text-muted)">颜色匹配：粗略模式，使用 Eagle 内置颜色数据，速度快但精度有限</span>';
+    }
+    const libName = currentLibraryName || '未知';
+    let exists = false;
+    try { exists = hasDiskCache(shapeStr); } catch {}
+    if (exists) {
+        return `<span style="color:var(--text-muted)">颜色匹配：精确模式，逐张采样裁剪区域平均色</span> · <span style="color:var(--success)">&#10003; 素材库「${libName}」瓦片 ${shapeStr} 索引已就绪</span>`;
+    }
+    return `<span style="color:var(--text-muted)">颜色匹配：精确模式，逐张采样裁剪区域平均色</span> · <span style="color:var(--accent)">&#9679; 素材库「${libName}」瓦片 ${shapeStr} 尚无索引，首次生成时自动构建</span>`;
+}
+
 function updateEstimate() {
     const outW = parseInt(document.getElementById('outputWidth').value);
     const gridCols = parseInt(document.getElementById('density').value);
@@ -603,7 +691,66 @@ function updateEstimate() {
         }
     }
 
+    lines.push(getCacheStatusLine(document.getElementById('tileShape').value));
+
     document.getElementById('estimate').innerHTML = lines.map(l => `<div class="estimate-line">${l}</div>`).join('');
+}
+
+// ============================================================
+// U5: Done image parameter summary
+// ============================================================
+
+function showDoneEstimate(item) {
+    const el = document.getElementById('estimate');
+    const s = item.settings;
+    const shape = parseTileRatio(s.tileShape);
+    const totalTiles = item.gridCols * item.gridRows;
+    const megapixels = (item.width * item.height / 1e6).toFixed(1);
+    const fidelity = s.fidelity;
+    const diversity = s.diversity;
+
+    const lines = [];
+    lines.push(
+        `<b>${item.gridCols}</b> 列 x <b>${item.gridRows}</b> 行 = 共 <b>${totalTiles.toLocaleString()}</b> 张小图，` +
+        `每张 <b>${item.tileW}x${item.tileH}</b>px（${shape.w}:${shape.h}），` +
+        `输出 <b>${item.width}x${item.height}</b>px（${megapixels}MP）`
+    );
+
+    if (item.gridCols <= 40) lines.push('精细度较低：远看能辨认原图轮廓，近看每张小图很大很清晰');
+    else if (item.gridCols <= 100) lines.push('精细度适中：远看接近原图，近看小图仍能辨认内容');
+    else if (item.gridCols <= 200) lines.push('精细度较高：远看几乎等同原图，近看小图较小但仍可辨');
+    else lines.push('精细度极高：远看与原图无异，近看需要放大才能看清小图');
+
+    if (fidelity === 0) lines.push('色彩还原度 0%：完全不叠色，小图保持原样，远看可能偏色');
+    else if (fidelity <= 15) lines.push(`色彩还原度 ${fidelity}%：轻微叠色，小图几乎原样，远看略有色差`);
+    else if (fidelity <= 30) lines.push(`色彩还原度 ${fidelity}%：适度叠色，远看色彩准确，近看小图略带色罩`);
+    else lines.push(`色彩还原度 ${fidelity}%：强叠色，远看非常像原图，近看小图内容被压淡`);
+
+    const regionSize = (2 * diversity + 1) * (2 * diversity + 1);
+    if (diversity === 0) lines.push('多样性关闭：允许相邻位置使用同一张图，可能出现大片重复');
+    else lines.push(`多样性 ${diversity}：相邻 ${diversity} 格内不重复，局部约需 ${regionSize} 张不同图`);
+
+    if (item.elapsed) lines.push(`生成耗时 <b>${item.elapsed}s</b>`);
+    if (item.saved) lines.push(`<span style="color:var(--success)">已保存到 Eagle</span>`);
+
+    lines.push(getCacheStatusLine(s.tileShape));
+
+    el.innerHTML = lines.map(l => `<div class="estimate-line">${l}</div>`).join('');
+}
+
+// ============================================================
+// U3: Generate button text
+// ============================================================
+
+function updateGenerateButtonText() {
+    const btn = document.getElementById('btnGenerate');
+    if (!btn) return;
+    const item = batchQueue[activeIndex];
+    if (item && item.status === 'done') {
+        btn.textContent = '重新生成';
+    } else {
+        btn.textContent = '生成当前';
+    }
 }
 
 // ============================================================
@@ -676,12 +823,16 @@ function renderPlaceholder(targetImg, settings) {
 // ============================================================
 
 function renderSidebarUI() {
+    // U2: sidebar count
+    document.querySelector('.sidebar-header').textContent = `图片列表 (${batchQueue.length})`;
+
     const list = document.getElementById('sidebarList');
     list.innerHTML = '';
     batchQueue.forEach((item, i) => {
         const el = document.createElement('div');
         el.className = 'sidebar-item'
             + (item.status !== 'pending' ? ' ' + item.status : '')
+            + (item.saved ? ' saved' : '')
             + (i === activeIndex ? ' active' : '');
         el.innerHTML = `
             <div class="sidebar-thumb"><img src="${item.thumbnailUrl}" alt=""></div>
@@ -713,12 +864,46 @@ async function onSidebarItemClick(index) {
 
     // Show result, in-progress render, or placeholder
     if (item.status === 'processing' && index === generatingIndex && liveBaseCanvas) {
-        // Blit current rendering progress to outputCanvas
+        // Reconstruct full view: placeholder blocks + rendered rows overlay
         const outputCanvas = document.getElementById('outputCanvas');
+        const gc = item._liveGridCols, gr = item._liveGridRows;
+        const tw = item._liveTileW, th = item._liveTileH;
+        const rgbs = item._liveGridRgbs;
+        const renderedRow = item._liveRenderedRow;
+
         outputCanvas.width = liveBaseCanvas.width;
         outputCanvas.height = liveBaseCanvas.height;
         const ctx = outputCanvas.getContext('2d');
-        ctx.drawImage(liveBaseCanvas, 0, 0);
+
+        // 1. Draw placeholder color blocks for ALL cells
+        if (rgbs && gc && gr) {
+            for (let r = 0; r < gr; r++) {
+                for (let c = 0; c < gc; c++) {
+                    const rgb = rgbs[r * gc + c];
+                    ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+                    ctx.fillRect(c * tw, r * th, tw, th);
+                }
+            }
+        }
+
+        // 2. Overlay already-rendered tile rows from liveBaseCanvas
+        if (renderedRow >= 0) {
+            const h = (renderedRow + 1) * th;
+            ctx.drawImage(liveBaseCanvas, 0, 0, liveBaseCanvas.width, h, 0, 0, liveBaseCanvas.width, h);
+
+            // 3. Apply fidelity overlay on rendered rows
+            const fAlpha = item.settings.fidelity / 100;
+            if (fAlpha > 0 && rgbs && gc) {
+                for (let r = 0; r <= renderedRow; r++) {
+                    for (let c = 0; c < gc; c++) {
+                        const rgb = rgbs[r * gc + c];
+                        ctx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${fAlpha})`;
+                        ctx.fillRect(c * tw, r * th, tw, th);
+                    }
+                }
+            }
+        }
+
         if (viewer) viewer.fitToContainer();
     } else if (item.status === 'done') {
         await showResult(item, index);
@@ -727,12 +912,23 @@ async function onSidebarItemClick(index) {
     }
 
     renderSidebarUI();
-    updateEstimate();
 
-    // Show per-image elapsed if available
+    // U5: done image shows actual params summary in estimate; others show live estimate
+    if (item.status === 'done') {
+        showDoneEstimate(item);
+    } else {
+        updateEstimate();
+    }
+
+    // U4: progress bar sync on switch
     if (item.status === 'done' && item.elapsed) {
         setProgress(1, 1, `完成! ${item.gridCols}x${item.gridRows} 网格, ${item.width}x${item.height}px, 耗时 ${item.elapsed}s`);
+    } else if (item.status === 'pending') {
+        document.getElementById('progress').style.display = 'none';
     }
+
+    // U3: button text feedback
+    updateGenerateButtonText();
 }
 
 async function showResult(item, index) {
@@ -746,19 +942,191 @@ async function showResult(item, index) {
 }
 
 // ============================================================
-// Tile index cache
+// Custom modal (replaces native confirm)
 // ============================================================
 
-async function ensureTileIndex() {
-    if (cachedTiles && cachedKdRoot) return { tiles: cachedTiles, kdRoot: cachedKdRoot };
+function showModal(html) {
+    return new Promise(resolve => {
+        const overlay = document.getElementById('modalOverlay');
+        const body = document.getElementById('modalBody');
+        const btnOk = document.getElementById('modalConfirm');
+        const btnCancel = document.getElementById('modalCancel');
+        body.innerHTML = html;
+        overlay.style.display = 'flex';
 
-    setProgress(0, 1, '获取图库列表...');
-    const allItems = await eagle.item.getAll();
-    if (allItems.length < 50) {
-        alert(`图库中仅有 ${allItems.length} 张图片，建议至少 100 张以获得较好效果`);
+        function cleanup(result) {
+            overlay.style.display = 'none';
+            btnOk.removeEventListener('click', onOk);
+            btnCancel.removeEventListener('click', onCancel);
+            resolve(result);
+        }
+        function onOk() { cleanup(true); }
+        function onCancel() { cleanup(false); }
+        btnOk.addEventListener('click', onOk);
+        btnCancel.addEventListener('click', onCancel);
+    });
+}
+
+// ============================================================
+// Tile index cache (memory + disk)
+// ============================================================
+
+function sanitizeFolderName(name) {
+    return name.replace(/[<>:"/\\|?*]/g, '_').replace(/\s+/g, ' ').trim() || 'default';
+}
+
+function simpleHash(str) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) {
+        h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+    }
+    return (h >>> 0).toString(36);
+}
+
+function shapeKeyToFileName(shapeStr) {
+    // '1:1' -> '1x1', '16:9' -> '16x9'
+    return shapeStr.replace(':', 'x');
+}
+
+let currentLibraryCacheDir = null;
+
+function getCacheDir() {
+    if (!currentLibraryCacheDir) {
+        // name_hash format: readable prefix + unique hash from path
+        const name = sanitizeFolderName(currentLibraryName || 'default');
+        const hash = simpleHash(currentLibraryId || 'default');
+        const libFolder = `${name}_${hash}`;
+        currentLibraryCacheDir = path.join(require('os').homedir(), '.photomosaic', 'cache', libFolder);
+    }
+    if (!fs.existsSync(currentLibraryCacheDir)) fs.mkdirSync(currentLibraryCacheDir, { recursive: true });
+    return currentLibraryCacheDir;
+}
+
+function getCachePath(shapeStr) {
+    return path.join(getCacheDir(), `tile_index_${shapeKeyToFileName(shapeStr)}.json`);
+}
+
+function hasDiskCache(shapeStr) {
+    const fp = getCachePath(shapeStr);
+    return fs.existsSync(fp);
+}
+
+function tryLoadDiskCache(shapeStr) {
+    const fp = getCachePath(shapeStr);
+    if (!fs.existsSync(fp)) return null;
+    try {
+        const data = JSON.parse(fs.readFileSync(fp, 'utf-8'));
+        if (data.tiles && data.tiles.length > 0) return data.tiles;
+    } catch {}
+    return null;
+}
+
+function saveDiskCache(shapeStr, tiles) {
+    const fp = getCachePath(shapeStr);
+    try { fs.writeFileSync(fp, JSON.stringify({ tiles })); } catch {}
+}
+
+function clearAllDiskCache() {
+    const dir = getCacheDir();
+    try {
+        const files = fs.readdirSync(dir);
+        for (const f of files) {
+            if (f.startsWith('tile_index_') && f.endsWith('.json')) {
+                fs.unlinkSync(path.join(dir, f));
+            }
+        }
+    } catch {}
+    tileIndexCache.clear();
+    cachedTiles = null;
+    cachedKdRoot = null;
+}
+
+async function syncLibraryId() {
+    try {
+        // Try all available API approaches to get library name and path
+        let newName = null;
+        let newId = null;
+
+        // Approach 1: direct properties
+        if (eagle.library.name) newName = eagle.library.name;
+        if (eagle.library.path) newId = eagle.library.path;
+
+        // Approach 2: async info() if direct properties are empty
+        if (!newName || !newId) {
+            try {
+                const info = await eagle.library.info();
+                if (info) {
+                    if (!newName && info.name) newName = info.name;
+                    if (!newId && info.path) newId = info.path;
+                    // info might have other id fields
+                    if (!newId && info.id) newId = info.id;
+                }
+            } catch {}
+        }
+
+        // Approach 3: derive name from path (path looks like "X:\...\MyLib.library")
+        if (!newName && newId) {
+            const base = path.basename(newId);
+            newName = base.replace(/\.library$/i, '') || base;
+        }
+
+        newName = newName || 'unknown';
+        newId = newId || 'unknown';
+
+        if (currentLibraryId && currentLibraryId !== newId) {
+            tileIndexCache.clear();
+            cachedTiles = null;
+            cachedKdRoot = null;
+            currentLibraryCacheDir = null;
+        }
+        currentLibraryName = newName;
+        currentLibraryId = newId;
+    } catch {}
+}
+
+function getIndexMode() {
+    const el = document.getElementById('indexMode');
+    return el ? el.value : 'sampled';
+}
+
+async function ensureTileIndex(shapeStr, tileAspect) {
+    await syncLibraryId();
+    const mode = getIndexMode();
+    const memKey = mode === 'palette' ? 'palette' : shapeStr;
+
+    // 1. Memory cache hit
+    if (tileIndexCache.has(memKey)) {
+        const cached = tileIndexCache.get(memKey);
+        cachedTiles = cached.tiles;
+        cachedKdRoot = cached.kdRoot;
+        libraryTileCount = cachedTiles.length;
+        return { tiles: cachedTiles, kdRoot: cachedKdRoot };
     }
 
-    cachedTiles = buildTileDatabase(allItems, setProgress);
+    // 2. Disk cache hit (sampled mode only; palette is instant)
+    if (mode === 'sampled') {
+        const diskTiles = tryLoadDiskCache(shapeStr);
+        if (diskTiles) {
+            setProgress(0, 1, '从缓存加载索引...');
+            cachedTiles = diskTiles;
+            libraryTileCount = cachedTiles.length;
+
+            setProgress(0, 1, '构建 KD-Tree 空间索引...');
+            cachedKdRoot = buildKDTree(cachedTiles.map((_, i) => i), cachedTiles, 0);
+            tileIndexCache.set(memKey, { tiles: cachedTiles, kdRoot: cachedKdRoot });
+            return { tiles: cachedTiles, kdRoot: cachedKdRoot };
+        }
+    }
+
+    // 3. Full rebuild
+    setProgress(0, 1, '获取图库列表...');
+    const allItems = await eagle.item.getAll();
+
+    if (mode === 'palette') {
+        cachedTiles = buildTileDatabasePalette(allItems, setProgress);
+    } else {
+        cachedTiles = await buildTileDatabaseSampled(allItems, tileAspect, setProgress);
+    }
     libraryTileCount = cachedTiles.length;
 
     if (cachedTiles.length < 20) {
@@ -767,6 +1135,11 @@ async function ensureTileIndex() {
 
     setProgress(0, 1, '构建 KD-Tree 空间索引...');
     cachedKdRoot = buildKDTree(cachedTiles.map((_, i) => i), cachedTiles, 0);
+
+    tileIndexCache.set(memKey, { tiles: cachedTiles, kdRoot: cachedKdRoot });
+    if (mode === 'sampled') {
+        saveDiskCache(shapeStr, cachedTiles);
+    }
 
     return { tiles: cachedTiles, kdRoot: cachedKdRoot };
 }
@@ -796,6 +1169,13 @@ async function generateForItem(index, tiles, kdRoot, plugin, progressPrefix) {
         onPlaceholderReady(gridRgbs, gridCols, gridRows, tileW, tileH) {
             liveGridRgbs = gridRgbs;
             liveGridCols = gridCols;
+            // Store on qItem so switch-back can reconstruct full view
+            qItem._liveGridRgbs = gridRgbs;
+            qItem._liveGridCols = gridCols;
+            qItem._liveGridRows = gridRows;
+            qItem._liveTileW = tileW;
+            qItem._liveTileH = tileH;
+            qItem._liveRenderedRow = -1;
             if (activeIndex !== index) return;
             const outputCanvas = document.getElementById('outputCanvas');
             outputCanvas.width = gridCols * tileW;
@@ -813,6 +1193,7 @@ async function generateForItem(index, tiles, kdRoot, plugin, progressPrefix) {
         },
         onRowRendered(baseCanvas, row, gridCols, tileW, tileH) {
             liveBaseCanvas = baseCanvas;
+            qItem._liveRenderedRow = row;
             if (activeIndex !== index) return;
             const outputCanvas = document.getElementById('outputCanvas');
             const ctx = outputCanvas.getContext('2d');
@@ -835,7 +1216,8 @@ async function generateForItem(index, tiles, kdRoot, plugin, progressPrefix) {
         targetImg, tiles, kdRoot,
         settings.gridCols, settings.tileW, settings.tileH, settings.repeatDistance,
         (cur, tot, text) => setProgress(cur, tot, pfx + text),
-        onVisualUpdate
+        onVisualUpdate,
+        () => isBatchCancelled
     );
 
     // Mark done immediately — user sees completion with no delay
@@ -864,40 +1246,120 @@ async function generateForItem(index, tiles, kdRoot, plugin, progressPrefix) {
 // Plugin lifecycle & UI wiring
 // ============================================================
 
-eagle.onPluginCreate(async (plugin) => {
-    // ---- Theme sync ----
-    const THEME_MAP = { LIGHT:'theme-light', LIGHTGRAY:'theme-lightgray', GRAY:'theme-gray', DARK:'theme-dark', BLUE:'theme-blue', PURPLE:'theme-purple' };
-    function syncTheme() {
-        const t = eagle.app.theme;
-        let cls = THEME_MAP[t];
-        if (!cls) cls = eagle.app.isDarkColors() ? 'theme-gray' : 'theme-light';
-        document.body.className = document.body.className.replace(/theme-\w+/g, '').trim();
-        document.body.classList.add(cls);
+// ============================================================
+// Theme sync (must be top-level, same pattern as MangaStream)
+// ============================================================
+
+const EAGLE_THEME_MAP = { LIGHT:'theme-light', LIGHTGRAY:'theme-lightgray', GRAY:'theme-gray', DARK:'theme-dark', BLUE:'theme-blue', PURPLE:'theme-purple' };
+const ALL_THEMES = ['theme-light', 'theme-lightgray', 'theme-gray', 'theme-dark', 'theme-blue', 'theme-purple'];
+
+function syncEagleTheme() {
+    if (typeof eagle === 'undefined' || !eagle.app) return;
+    const eagleTheme = eagle.app.theme;
+    let themeClass = EAGLE_THEME_MAP[eagleTheme];
+    if (!themeClass) {
+        themeClass = eagle.app.isDarkColors() ? 'theme-gray' : 'theme-light';
     }
-    syncTheme();
-    eagle.onThemeChanged(syncTheme);
+    ALL_THEMES.forEach(t => document.body.classList.remove(t));
+    document.body.classList.add(themeClass);
+}
+
+eagle.onPluginCreate(async (plugin) => {
+    pluginPath = plugin.path;
+    await syncLibraryId();
+
+    // ---- Theme sync ----
+    syncEagleTheme();
 
     // ---- Window controls ----
+    const minimizeBtn = document.getElementById('titlebar-minimize');
+    const maximizeBtn = document.getElementById('titlebar-maximize');
+    const closeBtn2 = document.getElementById('titlebar-close');
+    const titlebarDrag = document.getElementById('titlebar-drag');
+    const pinBtn = document.getElementById('titlebar-pin');
     let isPinned = false;
-    document.getElementById('titlebar-minimize').addEventListener('click', () => eagle.window.hide());
-    document.getElementById('titlebar-close').addEventListener('click', () => eagle.window.close());
-    document.getElementById('titlebar-maximize').addEventListener('click', async () => {
+
+    // Minimize
+    minimizeBtn.addEventListener('click', () => {
+        if (eagle.window && typeof eagle.window.minimize === 'function') {
+            eagle.window.minimize().catch(() => {});
+        }
+    });
+
+    // Close
+    closeBtn2.addEventListener('click', () => {
+        if (eagle.window && typeof eagle.window.close === 'function') {
+            eagle.window.close();
+        } else {
+            window.close();
+        }
+    });
+
+    // Maximize / restore (fullscreen toggle)
+    function updateMaximizeIcon() {
         const maxIcon = document.querySelector('#titlebar-maximize .maximize-icon');
         const restIcon = document.querySelector('#titlebar-maximize .restore-icon');
-        if (!document.fullscreenElement) {
-            await document.documentElement.requestFullscreen();
+        if (document.fullscreenElement) {
             maxIcon.style.display = 'none';
             restIcon.style.display = '';
         } else {
-            await document.exitFullscreen();
             maxIcon.style.display = '';
             restIcon.style.display = 'none';
         }
+    }
+
+    maximizeBtn.addEventListener('click', async () => {
+        try {
+            if (!document.fullscreenElement) {
+                await document.documentElement.requestFullscreen();
+            } else {
+                await document.exitFullscreen();
+            }
+        } catch {}
     });
-    document.getElementById('titlebar-pin').addEventListener('click', () => {
+
+    // Double-click titlebar → toggle fullscreen
+    titlebarDrag.addEventListener('dblclick', async () => {
+        try {
+            if (!document.fullscreenElement) {
+                await document.documentElement.requestFullscreen();
+            } else {
+                await document.exitFullscreen();
+            }
+        } catch {}
+    });
+
+    // Drag titlebar in fullscreen → exit fullscreen
+    let dragStart = null;
+    titlebarDrag.addEventListener('mousedown', (e) => {
+        if (document.fullscreenElement) {
+            dragStart = { x: e.screenX, y: e.screenY };
+        }
+    });
+    document.addEventListener('mousemove', (e) => {
+        if (dragStart && document.fullscreenElement) {
+            const dx = Math.abs(e.screenX - dragStart.x);
+            const dy = Math.abs(e.screenY - dragStart.y);
+            if (dx > 10 || dy > 10) {
+                dragStart = null;
+                document.exitFullscreen().catch(() => {});
+            }
+        }
+    });
+    document.addEventListener('mouseup', () => { dragStart = null; });
+
+    // Sync icon + drag region on fullscreen change
+    document.addEventListener('fullscreenchange', () => {
+        updateMaximizeIcon();
+        titlebarDrag.style.webkitAppRegion = document.fullscreenElement ? 'no-drag' : 'drag';
+    });
+
+    // Pin (always on top)
+    pinBtn.addEventListener('click', () => {
         isPinned = !isPinned;
-        eagle.window.setAlwaysOnTop(isPinned);
-        const pinBtn = document.getElementById('titlebar-pin');
+        eagle.window.setAlwaysOnTop(isPinned)
+            .then(() => eagle.window.focus())
+            .catch(() => {});
         const normalIcon = pinBtn.querySelector('.pin-icon-normal');
         const pinnedIcon = pinBtn.querySelector('.pin-icon-pinned');
         if (isPinned) {
@@ -927,6 +1389,74 @@ eagle.onPluginCreate(async (plugin) => {
 
     viewer = initViewer();
 
+    // Rebuild index button + index mode + cache status
+    const btnRebuild = document.getElementById('btnRebuildIndex');
+    const indexModeSelect = document.getElementById('indexMode');
+
+    function getCurrentShapeStr() {
+        return batchQueue[activeIndex] ? batchQueue[activeIndex].settings.tileShape : (tileShapeSelect.value || '1:1');
+    }
+
+    function updateRebuildLabel() {
+        const shape = getCurrentShapeStr();
+        const mode = indexModeSelect.value;
+        if (mode === 'palette') {
+            btnRebuild.style.display = 'none';
+        } else {
+            btnRebuild.style.display = '';
+            btnRebuild.textContent = `重建索引 (${shape})`;
+        }
+    }
+
+    function updateCacheStatus() {
+        // Cache status is now rendered inside the estimate area
+        // Just refresh the estimate/done display
+        const item = batchQueue[activeIndex];
+        if (item && item.status === 'done') {
+            showDoneEstimate(item);
+        } else {
+            updateEstimate();
+        }
+    }
+
+    await syncLibraryId();
+    updateRebuildLabel();
+    updateCacheStatus();
+
+    btnRebuild.addEventListener('click', async () => {
+        if (isBatchRunning) return;
+        await syncLibraryId();
+        const shape = tileShapeSelect.value || '1:1';
+        const libName = currentLibraryName || '未知';
+        const ok = await showModal(
+            `即将重建素材库「<b>${libName}</b>」瓦片 <b>${shape}</b> 的颜色索引。<br><br>` +
+            `此操作需要加载图库中所有缩略图并逐张采样裁剪区域的平均颜色，图库较大时可能耗时数秒到数十秒。<br><br>` +
+            `<span style="color:var(--text-secondary)">建议在图库内容发生较大变化后执行。</span>`
+        );
+        if (!ok) return;
+        btnRebuild.disabled = true;
+        setProgress(0, 1, '正在重建索引...');
+        try {
+            clearAllDiskCache();
+            const s = parseTileRatio(shape);
+            await ensureTileIndex(shape, s.w / s.h);
+            setProgress(1, 1, '索引重建完成');
+        } catch (err) {
+            setProgress(0, 0, '重建失败: ' + err.message);
+        }
+        btnRebuild.disabled = false;
+        updateCacheStatus();
+    });
+
+    // Switching index mode clears memory cache
+    indexModeSelect.addEventListener('change', () => {
+        tileIndexCache.clear();
+        cachedTiles = null;
+        cachedKdRoot = null;
+        updateRebuildLabel();
+        updateCacheStatus();
+    });
+
     function onSettingChange() {
         densityValue.textContent = densitySlider.value;
         fidelityValue.textContent = fidelitySlider.value;
@@ -938,6 +1468,11 @@ eagle.onPluginCreate(async (plugin) => {
         if (batchQueue[activeIndex] && batchQueue[activeIndex].status === 'pending' && cachedTargetImg && cachedTargetIndex === activeIndex) {
             renderPlaceholder(cachedTargetImg, batchQueue[activeIndex].settings);
         }
+
+        // U3: show live estimate when done item params change (user might want to regenerate)
+        updateGenerateButtonText();
+        updateRebuildLabel();
+        updateCacheStatus();
     }
 
     densitySlider.addEventListener('input', onSettingChange);
@@ -959,9 +1494,13 @@ eagle.onPluginCreate(async (plugin) => {
     });
 
     // ---- Load selected items and show sidebar ----
+    // P1: empty state handling
+    const emptyState = document.getElementById('emptyState');
+
     try {
         const selected = await eagle.item.getSelected();
         if (selected && selected.length > 0) {
+            emptyState.style.display = 'none';
             batchQueue = selected.map(item => ({
                 id: item.id,
                 name: item.name,
@@ -991,6 +1530,9 @@ eagle.onPluginCreate(async (plugin) => {
             } catch {}
 
             renderSidebarUI();
+        } else {
+            // P1: no images selected - empty state stays visible
+            document.querySelector('.sidebar-header').textContent = '图片列表 (0)';
         }
     } catch {}
 
@@ -1013,13 +1555,22 @@ eagle.onPluginCreate(async (plugin) => {
 
     // ---- Generate current ----
     btnGenerate.addEventListener('click', async () => {
-        if (isBatchRunning) return;
+        // If already running, treat click as cancel
+        if (isBatchRunning) {
+            isBatchCancelled = true;
+            btnGenerate.textContent = '取消中...';
+            btnGenerate.disabled = true;
+            return;
+        }
         if (activeIndex < 0 || !batchQueue[activeIndex]) return;
 
-        setAllGenBtnsDisabled(true);
+        btnGenerateAll.disabled = true;
+        btnGenerate.textContent = '取消';
 
         try {
-            const { tiles, kdRoot } = await ensureTileIndex();
+            const curShapeStr = batchQueue[activeIndex].settings.tileShape;
+            const curShape = parseTileRatio(curShapeStr);
+            const { tiles, kdRoot } = await ensureTileIndex(curShapeStr, curShape.w / curShape.h);
             updateEstimate();
 
             isBatchRunning = true;
@@ -1039,16 +1590,26 @@ eagle.onPluginCreate(async (plugin) => {
 
             const r = batchQueue[activeIndex];
             setProgress(1, 1, `完成! ${r.gridCols}x${r.gridRows} 网格, ${r.width}x${r.height}px, 耗时 ${elapsed}s`);
+            showDoneEstimate(r);
         } catch (err) {
-            if (batchQueue[activeIndex]) batchQueue[activeIndex].status = 'error';
-            alert('生成失败: ' + err.message);
-            setProgress(0, 0, '出错: ' + err.message);
+            if (err.message === 'CANCELLED') {
+                if (batchQueue[activeIndex]) batchQueue[activeIndex].status = 'pending';
+                setProgress(0, 0, '已取消');
+            } else {
+                if (batchQueue[activeIndex]) batchQueue[activeIndex].status = 'error';
+                alert('生成失败: ' + err.message);
+                setProgress(0, 0, '出错: ' + err.message);
+            }
             isBatchRunning = false;
+            generatingIndex = -1;
+            liveBaseCanvas = null;
             renderSidebarUI();
         }
 
-        setAllGenBtnsDisabled(false);
+        isBatchCancelled = false;
+        updateGenerateButtonText();
         updateButtonStates();
+    updateCacheStatus();
     });
 
     // ---- Generate all ----
@@ -1065,9 +1626,9 @@ eagle.onPluginCreate(async (plugin) => {
         btnGenerateAll.disabled = false;
 
         try {
-            cachedTiles = null;
-            cachedKdRoot = null;
-            const { tiles, kdRoot } = await ensureTileIndex();
+            const firstShapeStr = batchQueue[0].settings.tileShape;
+            const firstShape = parseTileRatio(firstShapeStr);
+            const { tiles, kdRoot } = await ensureTileIndex(firstShapeStr, firstShape.w / firstShape.h);
             updateEstimate();
 
             isBatchRunning = true;
@@ -1091,8 +1652,13 @@ eagle.onPluginCreate(async (plugin) => {
                     const r = batchQueue[i];
                     setProgress(1, 1, `[${i + 1}/${batchQueue.length}] 完成! ${r.gridCols}x${r.gridRows}, 耗时 ${itemElapsed}s`);
                 } catch (err) {
-                    batchQueue[i].status = 'error';
-                    batchQueue[i].errorMessage = err.message;
+                    if (err.message === 'CANCELLED') {
+                        batchQueue[i].status = 'pending';
+                        break;
+                    } else {
+                        batchQueue[i].status = 'error';
+                        batchQueue[i].errorMessage = err.message;
+                    }
                 }
 
                 renderSidebarUI();
@@ -1115,10 +1681,12 @@ eagle.onPluginCreate(async (plugin) => {
             setProgress(0, 0, '出错: ' + err.message);
             isBatchRunning = false;
             btnGenerateAll.textContent = '全部生成';
-            setAllGenBtnsDisabled(false);
         }
 
+        isBatchCancelled = false;
+        updateGenerateButtonText();
         updateButtonStates();
+    updateCacheStatus();
     });
 
     // ---- Save current ----
@@ -1149,9 +1717,19 @@ eagle.onPluginCreate(async (plugin) => {
             });
 
             if (batchQueue[activeIndex]) batchQueue[activeIndex].saved = true;
+            renderSidebarUI();
 
             try { fs.unlinkSync(tempFile); } catch {}
             setProgress(1, 1, '已保存到 Eagle 图库 / 马赛克图片');
+
+            // U3: temporary save confirmation
+            btnSave.textContent = '已保存 \u2713';
+            setTimeout(() => { btnSave.textContent = '保存到 Eagle'; }, 2000);
+
+            // U5: update estimate if viewing done item
+            if (batchQueue[activeIndex] && batchQueue[activeIndex].status === 'done') {
+                showDoneEstimate(batchQueue[activeIndex]);
+            }
         } catch (err) {
             alert('保存失败: ' + err.message);
         } finally {
@@ -1196,6 +1774,7 @@ eagle.onPluginCreate(async (plugin) => {
                 try { fs.unlinkSync(outFile); } catch {}
             }
 
+            renderSidebarUI();
             setProgress(1, 1, `已保存 ${unsaved.length} 张到 Eagle 图库 / 马赛克图片`);
         } catch (err) {
             alert('批量保存失败: ' + err.message);
@@ -1208,4 +1787,18 @@ eagle.onPluginCreate(async (plugin) => {
     eagle.onPluginBeforeExit(() => {
         if (batchQueue.length > 0) cleanupTempFiles(batchQueue, plugin.path);
     });
+});
+
+// 监听 Eagle 主题变化（顶层注册，与 MangaStream 一致）
+eagle.onThemeChanged(() => {
+    syncEagleTheme();
+});
+
+// 监听 Eagle 素材库切换，清除缓存并刷新状态
+eagle.onLibraryChanged(async () => {
+    await syncLibraryId();
+    tileIndexCache.clear();
+    cachedTiles = null;
+    cachedKdRoot = null;
+    currentLibraryCacheDir = null;
 });
