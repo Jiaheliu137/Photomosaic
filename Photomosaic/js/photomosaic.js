@@ -545,8 +545,9 @@ let liveBaseCanvas = null;
 // Folder & save tracking
 let mosaicFolderId = null;
 let pluginPath = null;
-let currentLibraryName = null; // readable library name for cache folder
-let currentLibraryId = null;   // hash for internal comparison
+let currentLibraryName = null;
+let currentLibraryId = null;
+let excludedFolderIds = new Set();
 
 // Caches
 let cachedBase = null;
@@ -1029,6 +1030,32 @@ function saveDiskCache(shapeStr, tiles) {
     try { fs.writeFileSync(fp, JSON.stringify({ tiles })); } catch {}
 }
 
+function loadExcludedFolders() {
+    try {
+        const fp = path.join(getCacheDir(), 'excluded_folders.json');
+        if (fs.existsSync(fp)) {
+            const arr = JSON.parse(fs.readFileSync(fp, 'utf-8'));
+            if (Array.isArray(arr)) excludedFolderIds = new Set(arr);
+        }
+    } catch {}
+}
+
+function saveExcludedFolders() {
+    try {
+        const fp = path.join(getCacheDir(), 'excluded_folders.json');
+        fs.writeFileSync(fp, JSON.stringify([...excludedFolderIds]));
+    } catch {}
+}
+
+function filterItemsByExcludedFolders(items) {
+    if (excludedFolderIds.size === 0) return items;
+    return items.filter(item => {
+        const folders = item.folders;
+        if (!folders || folders.length === 0) return true;
+        return !folders.some(fid => excludedFolderIds.has(fid));
+    });
+}
+
 function clearAllDiskCache() {
     const dir = getCacheDir();
     try {
@@ -1123,7 +1150,7 @@ async function ensureTileIndex(shapeStr, tileAspect, shouldCancel) {
 
     // 3. Full rebuild
     setProgress(0, 1, '获取图库列表...');
-    const allItems = await eagle.item.getAll();
+    const allItems = filterItemsByExcludedFolders(await eagle.item.getAll());
 
     let newTiles;
     if (mode === 'palette') {
@@ -1427,6 +1454,12 @@ eagle.onPluginCreate(async (plugin) => {
     }
 
     await syncLibraryId();
+    // Ensure mosaic output folder exists on every launch
+    try { await ensureMosaicFolder(); } catch {}
+    // Load persisted folder exclusions; auto-exclude mosaic folder
+    try { loadExcludedFolders(); } catch {}
+    if (mosaicFolderId) excludedFolderIds.add(mosaicFolderId);
+    try { saveExcludedFolders(); } catch {}
     updateRebuildLabel();
     updateCacheStatus();
 
@@ -1445,12 +1478,56 @@ eagle.onPluginCreate(async (plugin) => {
         await syncLibraryId();
         const shape = tileShapeSelect.value || '1:1';
         const libName = currentLibraryName || '未知';
+
+        // Fetch all folders for exclusion checkboxes
+        let allFolders = [];
+        try { allFolders = await eagle.folder.getAll(); } catch {}
+
+        // Flatten folder tree with indent level
+        function flattenFolders(folders, depth) {
+            let result = [];
+            for (const f of folders) {
+                result.push({ id: f.id, name: f.name, depth });
+                if (f.children && f.children.length > 0) {
+                    result = result.concat(flattenFolders(f.children, depth + 1));
+                }
+            }
+            return result;
+        }
+        const flatFolders = flattenFolders(allFolders, 0);
+
+        // Load persisted exclusions; auto-add mosaic folder
+        try { loadExcludedFolders(); } catch {}
+        if (mosaicFolderId) excludedFolderIds.add(mosaicFolderId);
+
+        // Build folder checkbox HTML
+        let folderHtml = '';
+        if (flatFolders.length > 0) {
+            folderHtml = `<div style="margin-top:8px;max-height:180px;overflow-y:auto;border:1px solid var(--border-color);border-radius:6px;padding:6px 8px;">` +
+                flatFolders.map(f => {
+                    const checked = excludedFolderIds.has(f.id) ? 'checked' : '';
+                    const indent = f.depth * 16;
+                    const label = f.id === mosaicFolderId ? `${f.name} <span style="color:var(--text-muted);font-size:10px">（输出文件夹）</span>` : f.name;
+                    return `<label style="display:flex;align-items:center;gap:4px;padding:2px 0;padding-left:${indent}px;cursor:pointer;font-size:12px;color:var(--text-primary)">` +
+                        `<input type="checkbox" value="${f.id}" class="exclude-folder-cb" ${checked} style="margin:0;accent-color:var(--accent)"> ${label}</label>`;
+                }).join('') +
+                `</div>`;
+        }
+
         const ok = await showModal(
             `即将重建素材库「<b>${libName}</b>」瓦片 <b>${shape}</b> 的颜色索引。<br><br>` +
             `此操作需要加载图库中所有缩略图并逐张采样裁剪区域的平均颜色，图库较大时可能耗时数秒到数十秒。<br><br>` +
-            `<span style="color:var(--text-secondary)">建议在图库内容发生较大变化后执行。</span>`
+            `<b style="font-size:12px">排除以下文件夹的图片：</b>` +
+            folderHtml +
+            `<br><span style="color:var(--text-secondary)">建议在图库内容发生较大变化后执行。</span>`
         );
         if (!ok) return;
+
+        // Read checkbox state from modal before it closes
+        const checkboxes = document.querySelectorAll('.exclude-folder-cb');
+        excludedFolderIds = new Set();
+        checkboxes.forEach(cb => { if (cb.checked) excludedFolderIds.add(cb.value); });
+        try { saveExcludedFolders(); } catch {}
 
         isRebuilding = true;
         rebuildCancelled = false;
@@ -1464,7 +1541,7 @@ eagle.onPluginCreate(async (plugin) => {
 
             // Build new index WITHOUT clearing old one first (atomic)
             setProgress(0, 1, '获取图库列表...');
-            const allItems = await eagle.item.getAll();
+            const allItems = filterItemsByExcludedFolders(await eagle.item.getAll());
             const newTiles = await buildTileDatabaseSampled(allItems, tileAspect, setProgress, () => rebuildCancelled);
 
             setProgress(0, 1, '构建 KD-Tree 空间索引...');
