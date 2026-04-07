@@ -16,25 +16,24 @@ function buildTileDatabasePalette(items, onProgress) {
         const imgPath = item.thumbnailPath || item.filePath;
         if (!imgPath) continue;
 
-        let r = 0, g = 0, b = 0, totalRatio = 0;
+        let lSum = 0, aSum = 0, bSum = 0, totalRatio = 0;
         for (const p of palettes) {
             const ratio = p.ratio || 0;
-            r += p.color[0] * ratio;
-            g += p.color[1] * ratio;
-            b += p.color[2] * ratio;
+            if (ratio === 0) continue;
+            const lab = rgbToLab(p.color[0], p.color[1], p.color[2]);
+            lSum += lab[0] * ratio;
+            aSum += lab[1] * ratio;
+            bSum += lab[2] * ratio;
             totalRatio += ratio;
         }
         if (totalRatio === 0) continue;
 
-        r = Math.round(r / totalRatio);
-        g = Math.round(g / totalRatio);
-        b = Math.round(b / totalRatio);
+        const avgLab = [lSum / totalRatio, aSum / totalRatio, bSum / totalRatio];
 
         tiles.push({
             id: item.id,
             imgPath: 'file:///' + imgPath.replace(/\\/g, '/'),
-            rgb: [r, g, b],
-            lab: rgbToLab(r, g, b)
+            lab: avgLab
         });
 
         if (i % 500 === 0 && onProgress) {
@@ -90,22 +89,18 @@ async function buildTileDatabaseSampled(items, tileAspect, onProgress, shouldCan
         sampleCtx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
         const data = sampleCtx.getImageData(0, 0, sw, sh).data;
 
-        let rSum = 0, gSum = 0, bSum = 0, count = 0;
+        let lSum = 0, aSum = 0, bSum = 0, count = 0;
         const stride = Math.max(1, Math.floor(data.length / 4 / 2000)) * 4;
         for (let j = 0; j < data.length; j += stride) {
-            rSum += data[j]; gSum += data[j + 1]; bSum += data[j + 2];
+            const lab = rgbToLab(data[j], data[j + 1], data[j + 2]);
+            lSum += lab[0]; aSum += lab[1]; bSum += lab[2];
             count++;
         }
-
-        const avgR = Math.round(rSum / count);
-        const avgG = Math.round(gSum / count);
-        const avgB = Math.round(bSum / count);
 
         tiles.push({
             id: candidates[i].id,
             imgPath: candidates[i].imgPath,
-            rgb: [avgR, avgG, avgB],
-            lab: rgbToLab(avgR, avgG, avgB)
+            lab: [lSum / count, aSum / count, bSum / count]
         });
     }
 
@@ -164,22 +159,23 @@ async function generateMosaic(targetImg, tiles, kdRoot, gridCols, tileW, tileH, 
             const x1 = Math.min(Math.ceil((col + 1) * cellW), imgW);
             const y1 = Math.min(Math.ceil((row + 1) * cellH), targetImg.height);
 
-            let r = 0, g = 0, b = 0, count = 0;
+            let r = 0, g = 0, b = 0;
+            let lSum = 0, aSum = 0, bSum = 0, count = 0;
             for (let py = y0; py < y1; py++) {
                 const rowOffset = py * imgW;
                 for (let px = x0; px < x1; px++) {
                     const i = (rowOffset + px) * 4;
-                    r += imgData[i];
-                    g += imgData[i + 1];
-                    b += imgData[i + 2];
+                    const pr = imgData[i], pg = imgData[i + 1], pb = imgData[i + 2];
+                    r += pr; g += pg; b += pb;
+                    const lab = rgbToLab(pr, pg, pb);
+                    lSum += lab[0]; aSum += lab[1]; bSum += lab[2];
                     count++;
                 }
             }
             if (count === 0) count = 1;
             const idx = row * gridCols + col;
-            const rgb = [Math.round(r / count), Math.round(g / count), Math.round(b / count)];
-            gridRgbs[idx] = rgb;
-            gridLabs[idx] = rgbToLab(rgb[0], rgb[1], rgb[2]);
+            gridRgbs[idx] = [Math.round(r / count), Math.round(g / count), Math.round(b / count)];
+            gridLabs[idx] = [lSum / count, aSum / count, bSum / count];
         }
     }
 
