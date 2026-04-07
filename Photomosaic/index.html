@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <script>
+    (function() {
+        if (typeof eagle === 'undefined' || !eagle.app) return;
+        var colors = { LIGHT:'#ffffff', LIGHTGRAY:'#e3e4e6', GRAY:'#37383c', DARK:'#18191c', BLUE:'#0d1630', PURPLE:'#1c1424' };
+        var t = eagle.app.theme;
+        var bg = colors[t] || (eagle.app.isDarkColors() ? '#37383c' : '#ffffff');
+        document.documentElement.style.backgroundColor = bg;
+        document.documentElement.style.setProperty('--initial-bg', bg);
+    })();
+    </script>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- 自定义标题栏 -->
+    <div id="titlebar">
+        <div id="titlebar-drag">
+            <img id="titlebar-logo" src="logo.png" alt="logo">
+            <span id="titlebar-title">Photomosaic</span>
+        </div>
+        <div id="titlebar-actions">
+            <div class="titlebar-btn" id="titlebar-pin">
+                <svg class="pin-icon-normal" width="24" height="24" viewBox="0 0 24 24" fill="none">
+                    <path d="M14.012 5.78978C13.822 5.59992 13.572 5.5 13.302 5.5C13.242 5.5 13.172 5.5 13.112 5.51998C12.782 5.57994 12.512 5.79977 12.382 6.10953L10.992 9.33705C10.862 9.63682 10.592 9.85665 10.272 9.92659L8.30195 10.3163C7.94195 10.3862 7.65195 10.656 7.54195 11.0058C7.43195 11.3555 7.53195 11.7452 7.79195 12.005L9.54195 13.7537L5.65195 17.6407C5.45195 17.8405 5.45195 18.1503 5.65195 18.3501C5.75195 18.45 5.88195 18.5 6.00195 18.5C6.12195 18.5 6.26195 18.45 6.35195 18.3501L10.242 14.4631L11.992 16.2118C12.182 16.4016 12.442 16.5015 12.702 16.5015C12.802 16.5015 12.892 16.4915 12.992 16.4616C13.342 16.3517 13.612 16.0619 13.682 15.7022L14.072 13.7337C14.132 13.4139 14.352 13.1441 14.662 13.0142L17.892 11.6253C18.192 11.4954 18.422 11.2256 18.482 10.8958C18.542 10.5661 18.442 10.2364 18.212 9.99654L14.012 5.78978ZM14.272 12.0749C13.662 12.3347 13.232 12.8743 13.102 13.5238L12.712 15.4923L8.50195 11.2955L10.472 10.9058C11.122 10.7759 11.662 10.3363 11.922 9.73674L13.312 6.50922L17.512 10.706L14.272 12.0749Z" fill="currentColor"/>
+                </svg>
+                <svg class="pin-icon-pinned" width="24" height="24" viewBox="0 0 24 24" fill="none" style="display:none;">
+                    <path d="M18.2036 9.98655L14.0057 5.78978C13.8158 5.59992 13.5659 5.5 13.2961 5.5C13.2361 5.5 13.1661 5.5 13.1062 5.51998C12.7763 5.57994 12.5065 5.79977 12.3765 6.10953L11.1272 9.01729L11.8868 9.77671C11.8868 9.77671 11.9068 9.75673 11.9068 9.73674L13.2961 6.50922L17.494 10.706L14.2656 12.0949C14.2656 12.0949 14.2456 12.1149 14.2256 12.1149L14.9852 12.8743L17.8938 11.6253C18.1936 11.4954 18.4235 11.2256 18.4835 10.8958C18.543 10.5684 18.4398 10.2226 18.2036 9.98655ZM6.84882 6.14873C6.64892 5.94889 6.33908 5.94889 6.13918 6.14873C6.03923 6.24865 5.98925 6.37855 5.98925 6.49846C5.98925 6.61837 6.03923 6.75826 6.13918 6.84819L9.38805 10.0965L8.29859 10.3163C7.93878 10.3862 7.64892 10.656 7.53898 11.0058C7.42903 11.3555 7.52898 11.7452 7.78885 12.005L9.53797 13.7537L5.64992 17.6407C5.45003 17.8405 5.45003 18.1503 5.64992 18.3501C5.74987 18.45 5.87981 18.5 5.99975 18.5C6.11969 18.5 6.25962 18.45 6.34957 18.3501L10.2376 14.4631L11.9867 16.2118C12.1766 16.4016 12.4365 16.5015 12.6964 16.5015C12.7963 16.5015 12.8863 16.4915 12.9862 16.4616C13.3361 16.3517 13.6059 16.0619 13.6759 15.7022L13.8958 14.613L17.1447 17.8613C17.3446 18.0611 17.6544 18.0611 17.8543 17.8613C17.9542 17.7613 18.0042 17.6314 18.0042 17.5115C18.0042 17.3916 17.9542 17.2517 17.8543 17.1618L6.84882 6.14873ZM12.6964 15.4923L8.49849 11.2955L10.2376 10.9458L13.0362 13.7437L12.6864 15.4823L12.6964 15.4923Z" fill="currentColor"/>
+                </svg>
+            </div>
+            <div class="titlebar-wnd-btn" id="titlebar-minimize">
+                <svg width="12" height="12" viewBox="0 0 12 12"><rect x="1" y="5.5" width="10" height="1" fill="currentColor"/></svg>
+            </div>
+            <div class="titlebar-wnd-btn" id="titlebar-maximize">
+                <svg class="maximize-icon" width="12" height="12" viewBox="0 0 12 12"><rect x="1.5" y="1.5" width="9" height="9" rx="1" stroke="currentColor" stroke-width="1" fill="none"/></svg>
+                <svg class="restore-icon" width="12" height="12" viewBox="0 0 12 12" style="display:none;">
+                    <rect x="3" y="1" width="7.5" height="7.5" rx="1" stroke="currentColor" stroke-width="1" fill="none"/>
+                    <rect x="1.5" y="3.5" width="7.5" height="7.5" rx="1" stroke="currentColor" stroke-width="1" fill="var(--restore-bg, #ffffff)"/>
+                </svg>
+            </div>
+            <div class="titlebar-wnd-btn titlebar-wnd-close" id="titlebar-close">
+                <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 2l8 8M10 2L2 10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+            </div>
+        </div>
+    </div>
+
+    <div id="app">
+        <div id="sidebar">
+            <div class="sidebar-header">图片列表</div>
+            <div class="sidebar-list" id="sidebarList"></div>
+        </div>
+        <div id="main">
+            <div class="settings-panel">
+                <div class="settings-controls">
+                    <div class="setting-row">
+                        <label>输出宽度</label>
+                        <select id="outputWidth">
+                            <option value="2000">2000px（快速预览）</option>
+                            <option value="4000" selected>4000px（标准）</option>
+                            <option value="8000">8000px（高清）</option>
+                            <option value="12000">12000px（超高清）</option>
+                            <option value="16000">16000px（极限）</option>
+                        </select>
+                    </div>
+                    <div class="setting-row">
+                        <label>精细度</label>
+                        <input type="range" id="density" value="80" min="20" max="300" step="10">
+                        <span class="range-value"><span id="densityValue">80</span> 张/行</span>
+                    </div>
+                    <div class="setting-row">
+                        <label>瓦片形状</label>
+                        <select id="tileShape">
+                            <option value="1:1" selected>1:1 正方形</option>
+                            <option value="4:3">4:3 横向</option>
+                            <option value="3:4">3:4 竖向</option>
+                            <option value="16:9">16:9 宽屏</option>
+                            <option value="9:16">9:16 竖屏</option>
+                            <option value="3:2">3:2 横向</option>
+                            <option value="2:3">2:3 竖向</option>
+                        </select>
+                    </div>
+                    <div class="setting-row">
+                        <label>多样性</label>
+                        <input type="range" id="diversity" value="3" min="0" max="10" step="1">
+                        <span class="range-value"><span id="diversityValue">3</span></span>
+                    </div>
+                    <div class="setting-row">
+                        <label>色彩还原度</label>
+                        <input type="range" id="colorFidelity" value="20" min="0" max="50" step="5">
+                        <span class="range-value"><span id="colorFidelityValue">20</span>%</span>
+                    </div>
+                    <div class="setting-hint">生成后仍可实时调节，无需重新生成</div>
+                </div>
+                <div class="settings-info">
+                    <div class="estimate" id="estimate"></div>
+                    <div class="actions">
+                        <button id="btnGenerate" class="btn-primary">生成当前</button>
+                        <button id="btnGenerateAll" class="btn-secondary">全部生成</button>
+                        <button id="btnSave" class="btn-secondary" disabled>保存到 Eagle</button>
+                        <button id="btnSaveAll" class="btn-secondary" disabled style="display:none">全部保存到 Eagle</button>
+                    </div>
+                    <div id="progress" class="progress" style="display:none;">
+                        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+                        <span id="progressText">准备中...</span>
+                    </div>
+                </div>
+            </div>
+
+            <div id="preview" class="preview">
+                <canvas id="outputCanvas"></canvas>
+                <div class="zoom-hint">滚轮缩放 / 拖拽平移</div>
+            </div>
+        </div>
+    </div>
+
+    <script type="text/javascript" src="js/photomosaic.js"></script>
+</body>
+</html>

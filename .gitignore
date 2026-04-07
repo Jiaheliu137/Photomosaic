@@ -1,0 +1,7 @@
+Photomosaic/temp/
+Photomosaic/js/debug_palettes.js
+Photomosaic/js/plugin.js
+node_modules/
+.DS_Store
+*.log
+.claude/

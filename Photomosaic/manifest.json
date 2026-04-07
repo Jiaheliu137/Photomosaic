@@ -1,0 +1,19 @@
+{
+    "id": "7ff5cda2-d421-4865-954b-fcd2e17a503a",
+    "version": "1.0.0",
+    "platform": "all",
+    "arch": "all",
+    "name": "Photomosaic",
+    "logo": "/logo.png",
+    "keywords": ["photomosaic", "mosaic", "photo", "art"],
+    "devTools": false,
+    "main": {
+        "frame": false,
+        "vibrancy": true,
+        "url": "index.html",
+        "width": 1120,
+        "height": 700,
+        "minWidth": 800,
+        "minHeight": 600
+    }
+}
