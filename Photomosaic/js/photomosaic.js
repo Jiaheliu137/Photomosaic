@@ -176,7 +176,7 @@ function buildTileDatabasePalette(items, onProgress) {
 }
 
 // Sampled mode: load thumbnails, center-crop to tileAspect, sample average color (accurate)
-async function buildTileDatabaseSampled(items, tileAspect, onProgress) {
+async function buildTileDatabaseSampled(items, tileAspect, onProgress, shouldCancel) {
     const candidates = [];
     const imageExts = new Set(['jpg', 'jpeg', 'png', 'bmp', 'webp', 'gif']);
 
@@ -192,6 +192,9 @@ async function buildTileDatabaseSampled(items, tileAspect, onProgress) {
     const tiles = [];
 
     for (let i = 0; i < candidates.length; i++) {
+        if (shouldCancel && shouldCancel()) {
+            throw new Error('CANCELLED');
+        }
         if (i % 100 === 0 && onProgress) {
             onProgress(i, candidates.length, `采样缩略图: ${i}/${candidates.length}`);
             await new Promise(r => setTimeout(r, 0));
@@ -1089,7 +1092,7 @@ function getIndexMode() {
     return el ? el.value : 'sampled';
 }
 
-async function ensureTileIndex(shapeStr, tileAspect) {
+async function ensureTileIndex(shapeStr, tileAspect, shouldCancel) {
     await syncLibraryId();
     const mode = getIndexMode();
     const memKey = mode === 'palette' ? 'palette' : shapeStr;
@@ -1122,20 +1125,24 @@ async function ensureTileIndex(shapeStr, tileAspect) {
     setProgress(0, 1, '获取图库列表...');
     const allItems = await eagle.item.getAll();
 
+    let newTiles;
     if (mode === 'palette') {
-        cachedTiles = buildTileDatabasePalette(allItems, setProgress);
+        newTiles = buildTileDatabasePalette(allItems, setProgress);
     } else {
-        cachedTiles = await buildTileDatabaseSampled(allItems, tileAspect, setProgress);
+        newTiles = await buildTileDatabaseSampled(allItems, tileAspect, setProgress, shouldCancel);
     }
-    libraryTileCount = cachedTiles.length;
 
-    if (cachedTiles.length < 20) {
-        alert(`仅索引到 ${cachedTiles.length} 张有效瓦片图，效果可能较差`);
+    if (newTiles.length < 20) {
+        alert(`仅索引到 ${newTiles.length} 张有效瓦片图，效果可能较差`);
     }
 
     setProgress(0, 1, '构建 KD-Tree 空间索引...');
-    cachedKdRoot = buildKDTree(cachedTiles.map((_, i) => i), cachedTiles, 0);
+    const newKdRoot = buildKDTree(newTiles.map((_, i) => i), newTiles, 0);
 
+    // Atomic swap: only update globals after full build succeeds
+    cachedTiles = newTiles;
+    cachedKdRoot = newKdRoot;
+    libraryTileCount = cachedTiles.length;
     tileIndexCache.set(memKey, { tiles: cachedTiles, kdRoot: cachedKdRoot });
     if (mode === 'sampled') {
         saveDiskCache(shapeStr, cachedTiles);
@@ -1423,7 +1430,17 @@ eagle.onPluginCreate(async (plugin) => {
     updateRebuildLabel();
     updateCacheStatus();
 
+    let isRebuilding = false;
+    let rebuildCancelled = false;
+
     btnRebuild.addEventListener('click', async () => {
+        // If rebuilding, treat click as cancel
+        if (isRebuilding) {
+            rebuildCancelled = true;
+            btnRebuild.textContent = '取消中...';
+            btnRebuild.disabled = true;
+            return;
+        }
         if (isBatchRunning) return;
         await syncLibraryId();
         const shape = tileShapeSelect.value || '1:1';
@@ -1434,17 +1451,47 @@ eagle.onPluginCreate(async (plugin) => {
             `<span style="color:var(--text-secondary)">建议在图库内容发生较大变化后执行。</span>`
         );
         if (!ok) return;
-        btnRebuild.disabled = true;
+
+        isRebuilding = true;
+        rebuildCancelled = false;
+        btnRebuild.textContent = '取消重建';
+        setAllGenBtnsDisabled(true);
         setProgress(0, 1, '正在重建索引...');
+
         try {
-            clearAllDiskCache();
             const s = parseTileRatio(shape);
-            await ensureTileIndex(shape, s.w / s.h);
-            setProgress(1, 1, '索引重建完成');
+            const tileAspect = s.w / s.h;
+
+            // Build new index WITHOUT clearing old one first (atomic)
+            setProgress(0, 1, '获取图库列表...');
+            const allItems = await eagle.item.getAll();
+            const newTiles = await buildTileDatabaseSampled(allItems, tileAspect, setProgress, () => rebuildCancelled);
+
+            setProgress(0, 1, '构建 KD-Tree 空间索引...');
+            const newKdRoot = buildKDTree(newTiles.map((_, i) => i), newTiles, 0);
+
+            // Success — now atomically replace old cache
+            clearAllDiskCache();
+            cachedTiles = newTiles;
+            cachedKdRoot = newKdRoot;
+            libraryTileCount = cachedTiles.length;
+            const memKey = shape;
+            tileIndexCache.set(memKey, { tiles: cachedTiles, kdRoot: cachedKdRoot });
+            saveDiskCache(shape, cachedTiles);
+
+            setProgress(1, 1, `索引重建完成，${cachedTiles.length} 张有效瓦片`);
         } catch (err) {
-            setProgress(0, 0, '重建失败: ' + err.message);
+            if (err.message === 'CANCELLED') {
+                setProgress(0, 0, '重建已取消，原索引不受影响');
+            } else {
+                setProgress(0, 0, '重建失败: ' + err.message);
+            }
         }
-        btnRebuild.disabled = false;
+
+        isRebuilding = false;
+        rebuildCancelled = false;
+        updateRebuildLabel();
+        updateButtonStates();
         updateCacheStatus();
     });
 
@@ -1564,16 +1611,18 @@ eagle.onPluginCreate(async (plugin) => {
         }
         if (activeIndex < 0 || !batchQueue[activeIndex]) return;
 
+        isBatchRunning = true;
+        isBatchCancelled = false;
         btnGenerateAll.disabled = true;
         btnGenerate.textContent = '取消';
 
         try {
             const curShapeStr = batchQueue[activeIndex].settings.tileShape;
             const curShape = parseTileRatio(curShapeStr);
-            const { tiles, kdRoot } = await ensureTileIndex(curShapeStr, curShape.w / curShape.h);
+            const { tiles, kdRoot } = await ensureTileIndex(curShapeStr, curShape.w / curShape.h, () => isBatchCancelled);
+            if (isBatchCancelled) throw new Error('CANCELLED');
             updateEstimate();
 
-            isBatchRunning = true;
             generatingIndex = activeIndex;
             batchQueue[activeIndex].status = 'processing';
             renderSidebarUI();
@@ -1585,7 +1634,6 @@ eagle.onPluginCreate(async (plugin) => {
 
             generatingIndex = -1;
             liveBaseCanvas = null;
-            isBatchRunning = false;
             renderSidebarUI();
 
             const r = batchQueue[activeIndex];
@@ -1600,16 +1648,16 @@ eagle.onPluginCreate(async (plugin) => {
                 alert('生成失败: ' + err.message);
                 setProgress(0, 0, '出错: ' + err.message);
             }
-            isBatchRunning = false;
             generatingIndex = -1;
             liveBaseCanvas = null;
             renderSidebarUI();
         }
 
+        isBatchRunning = false;
         isBatchCancelled = false;
         updateGenerateButtonText();
         updateButtonStates();
-    updateCacheStatus();
+        updateCacheStatus();
     });
 
     // ---- Generate all ----
@@ -1618,9 +1666,12 @@ eagle.onPluginCreate(async (plugin) => {
             isBatchCancelled = true;
             btnGenerateAll.textContent = '取消中...';
             btnGenerateAll.disabled = true;
+            btnGenerate.disabled = true;
             return;
         }
 
+        isBatchRunning = true;
+        isBatchCancelled = false;
         setAllGenBtnsDisabled(true);
         btnGenerateAll.textContent = '取消';
         btnGenerateAll.disabled = false;
@@ -1628,11 +1679,9 @@ eagle.onPluginCreate(async (plugin) => {
         try {
             const firstShapeStr = batchQueue[0].settings.tileShape;
             const firstShape = parseTileRatio(firstShapeStr);
-            const { tiles, kdRoot } = await ensureTileIndex(firstShapeStr, firstShape.w / firstShape.h);
+            const { tiles, kdRoot } = await ensureTileIndex(firstShapeStr, firstShape.w / firstShape.h, () => isBatchCancelled);
+            if (isBatchCancelled) throw new Error('CANCELLED');
             updateEstimate();
-
-            isBatchRunning = true;
-            isBatchCancelled = false;
 
             const t0 = performance.now();
             for (let i = 0; i < batchQueue.length; i++) {
@@ -1677,16 +1726,23 @@ eagle.onPluginCreate(async (plugin) => {
             if (isBatchCancelled) msg += '（已取消）';
             setProgress(1, 1, msg);
         } catch (err) {
-            alert('生成失败: ' + err.message);
-            setProgress(0, 0, '出错: ' + err.message);
+            if (err.message === 'CANCELLED') {
+                setProgress(0, 0, '已取消');
+            } else {
+                alert('生成失败: ' + err.message);
+                setProgress(0, 0, '出错: ' + err.message);
+            }
             isBatchRunning = false;
             btnGenerateAll.textContent = '全部生成';
         }
 
+        isBatchRunning = false;
         isBatchCancelled = false;
+        generatingIndex = -1;
+        liveBaseCanvas = null;
         updateGenerateButtonText();
         updateButtonStates();
-    updateCacheStatus();
+        updateCacheStatus();
     });
 
     // ---- Save current ----
