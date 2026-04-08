@@ -411,35 +411,58 @@ eagle.onPluginCreate(async (plugin) => {
     try {
         const selected = await eagle.item.getSelected();
         if (selected && selected.length > 0) {
-            emptyState.style.display = 'none';
-            batchQueue = selected.map(item => ({
-                id: item.id,
-                name: item.name,
-                filePath: item.filePath,
-                thumbnailUrl: 'file:///' + (item.thumbnailPath || item.filePath).replace(/\\/g, '/'),
-                sourceAspect: (item.height && item.width) ? item.height / item.width : 0,
-                status: 'pending',
-                errorMessage: null,
-                tempBasePath: null,
-                width: 0, height: 0,
-                gridCols: 0, gridRows: 0, tileW: 0, tileH: 0,
-                gridRgbs: null,
-                saved: false,
-                settings: { ...getDefaultSettings() }
-            }));
-            activeIndex = 0;
+            const supportedExts = new Set(['jpg', 'jpeg', 'png', 'bmp', 'webp', 'gif']);
+            const validItems = [];
+            const skippedNames = [];
+            for (const item of selected) {
+                const ext = (item.ext || '').toLowerCase();
+                if (supportedExts.has(ext)) {
+                    validItems.push(item);
+                } else {
+                    skippedNames.push(`${item.name}.${item.ext || '?'}`);
+                }
+            }
+            if (skippedNames.length > 0) {
+                const maxShow = 5;
+                const shown = skippedNames.slice(0, maxShow).join('、');
+                const more = skippedNames.length > maxShow ? `等 ${skippedNames.length} 个` : '';
+                setProgress(1, 1, `已跳过不支持的格式：${shown}${more}`);
+            }
+            if (validItems.length === 0) {
+                document.querySelector('.sidebar-header').textContent = '图片列表 (0)';
+                emptyState.style.display = '';
+            }
+            if (validItems.length > 0) {
+                emptyState.style.display = 'none';
+                batchQueue = validItems.map(item => ({
+                    id: item.id,
+                    name: item.name,
+                    filePath: item.filePath,
+                    thumbnailUrl: 'file:///' + (item.thumbnailPath || item.filePath).replace(/\\/g, '/'),
+                    sourceAspect: (item.height && item.width) ? item.height / item.width : 0,
+                    status: 'pending',
+                    errorMessage: null,
+                    tempBasePath: null,
+                    width: 0, height: 0,
+                    gridCols: 0, gridRows: 0, tileW: 0, tileH: 0,
+                    gridRgbs: null,
+                    saved: false,
+                    settings: { ...getDefaultSettings() }
+                }));
+                activeIndex = 0;
 
-            if (selected.length > 1) btnSaveAll.style.display = '';
+                if (validItems.length > 1) btnSaveAll.style.display = '';
 
-            try {
-                cachedTargetImg = await loadImage('file:///' + selected[0].filePath.replace(/\\/g, '/'));
-                cachedTargetIndex = 0;
-                batchQueue[0].sourceAspect = cachedTargetImg.height / cachedTargetImg.width;
-                targetImgAspect = batchQueue[0].sourceAspect;
-                renderPlaceholder(cachedTargetImg, batchQueue[0].settings);
-            } catch {}
+                try {
+                    cachedTargetImg = await loadImage('file:///' + validItems[0].filePath.replace(/\\/g, '/'));
+                    cachedTargetIndex = 0;
+                    batchQueue[0].sourceAspect = cachedTargetImg.height / cachedTargetImg.width;
+                    targetImgAspect = batchQueue[0].sourceAspect;
+                    renderPlaceholder(cachedTargetImg, batchQueue[0].settings);
+                } catch {}
 
-            renderSidebarUI();
+                renderSidebarUI();
+            }
         } else {
             document.querySelector('.sidebar-header').textContent = '图片列表 (0)';
         }
