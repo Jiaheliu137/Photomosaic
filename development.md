@@ -18,68 +18,196 @@ utils.js → color.js → cache.js → mosaic.js → viewer.js → ui.js → plu
 
 ### 模块职责
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `utils.js` | ~80 | 通用工具：loadImage、parseTileRatio、进度条、临时文件读写 |
-| `color.js` | ~100 | RGB→Lab 转换、ΔE 距离、KD-Tree 构建与最近邻搜索 |
-| `cache.js` | ~150 | 瓦片索引磁盘缓存、素材库 ID 同步、文件夹排除管理 |
-| `mosaic.js` | ~350 | 两种瓦片数据库构建（palette/sampled）、逐行渲染、叠色合成 |
-| `viewer.js` | ~100 | 缩放平移查看器、交互状态追踪 |
-| `ui.js` | ~370 | 侧栏渲染、参数⇄设置同步、估算计算、弹窗 |
-| `plugin.js` | ~720 | Eagle 生命周期、按钮事件、生成/保存流程、主题适配 |
+| 文件 | 职责 |
+|------|------|
+| `utils.js` | 通用工具：loadImage、parseTileRatio、进度条、临时文件读写 |
+| `color.js` | 色彩科学（RGB→Lab）、KD-Tree（单最近邻 + top-K）、子块距离、两阶段搜索 |
+| `cache.js` | 瓦片索引磁盘缓存（带版本控制）、素材库 ID 同步、文件夹排除管理 |
+| `mosaic.js` | 瓦片数据库构建（palette 单色 / sampled 5×5 子块）、逐行渲染管线、叠色合成 |
+| `viewer.js` | 缩放平移查看器、交互状态追踪 |
+| `ui.js` | 侧栏渲染、参数⇄设置同步、估算计算、弹窗 |
+| `plugin.js` | Eagle 生命周期、按钮事件、生成/保存流程、主题适配 |
 
-模块间通过全局变量通信（与 MangaStream 插件相同的 no-build 模式）。
+模块间通过全局变量通信（无构建工具的多文件 Eagle 插件标准模式）。
 
 ---
 
 ## 色彩科学
 
-### RGB → CIELAB 转换
+### 为什么不用 RGB 比较颜色
 
-照片马赛克的核心问题是「用哪张图片替换目标图的某个区域」。直接比较 RGB 值不符合人眼感知——RGB 空间中欧氏距离相等的两对颜色，人眼看来可能差异很大。
+RGB 是显示器的物理模型（红/绿/蓝发光强度），不是人眼的感知模型。RGB 空间中欧氏距离相等的两对颜色，人眼看来差异可能完全不同：
 
-CIELAB（CIE 1976 L\*a\*b\*）色彩空间是为感知均匀性设计的：
+- `(0,0,0)` 和 `(0,0,30)`：纯黑 vs 极暗蓝，距离 30，人眼几乎看不出
+- `(255,255,0)` 和 `(255,225,0)`：亮黄 vs 稍暗黄，距离也是 30，但人眼一眼分辨
 
-1. **RGB → XYZ**：通过 sRGB 线性化（gamma 校正逆变换）和 3x3 矩阵变换，转为 CIE XYZ 色彩空间
-2. **XYZ → Lab**：以 D65 白点为参考，对 X/Y/Z 分别做立方根变换（低值段线性近似），得到 L\*（亮度 0-100）、a\*（绿-红轴）、b\*（蓝-黄轴）
+### CIELAB 色彩空间
+
+CIELAB（CIE 1976 L\*a\*b\*）是为**感知均匀性**设计的色彩空间，基于人眼视神经的对立色编码：
+
+```
+L* = 明度          0（纯黑）→ 100（纯白）    ← 来自视杆细胞+视锥细胞的总亮度信号
+a* = 绿红对立轴    负（绿）→ 正（红）        ← 来自 L锥-M锥 的差值信号
+b* = 蓝黄对立轴    负（蓝）→ 正（黄）        ← 来自 S锥-(L锥+M锥) 的差值信号
+```
+
+核心特性：Lab 空间中两点的欧氏距离 ΔE 直接对应人眼感知色差。ΔE < 2.3 时人眼几乎无法分辨。
+
+### RGB → Lab 转换
+
+三步变换，每步都可逆：
+
+**第一步：sRGB → 线性 RGB（去 gamma 校正）**
+
+sRGB 标准对亮度做了非线性映射（gamma 2.2）以适应人眼。计算颜色距离前必须还原为线性物理亮度：
+
+```
+c = c_sRGB / 255
+c_linear = c ≤ 0.04045 ? c/12.92 : ((c+0.055)/1.055)^2.4
+```
+
+**第二步：线性 RGB → CIE XYZ（矩阵变换）**
+
+```
+X = 0.4125·R + 0.3576·G + 0.1804·B
+Y = 0.2127·R + 0.7152·G + 0.0722·B
+Z = 0.0193·R + 0.1192·G + 0.9503·B
+```
+
+矩阵来自 sRGB 标准对 D65 白点的定义。Y 行的系数（0.21, 0.72, 0.07）反映人眼对红绿蓝的亮度敏感度比例——绿色贡献 72% 的感知亮度。
+
+**第三步：XYZ → Lab（立方根压缩）**
+
+```
+f(t) = t > 0.008856 ? t^(1/3) : 7.787·t + 16/116
+
+L = 116·f(Y/Yn) - 16
+a = 500·[f(X/Xn) - f(Y/Yn)]
+b = 200·[f(Y/Yn) - f(Z/Zn)]
+```
+
+其中 Xn=0.95047, Yn=1.0, Zn=1.08883 为 D65 白点参考值。立方根压缩模拟人眼对暗色更敏感的韦伯-费希纳定律。
 
 ### 全程 Lab 空间计算
 
-所有颜色平均操作均在 Lab 空间完成（先逐像素/逐色 RGB→Lab，再在 Lab 空间加权/算术平均），而非在 RGB 空间平均后转 Lab。RGB→Lab 是非线性变换，先平均再转换 ≠ 先转换再平均。Lab 空间平均的结果在感知上更准确。
+所有颜色平均操作均在 Lab 空间完成——先逐像素 RGB→Lab，再在 Lab 空间求平均。因为 RGB→Lab 是非线性变换：
 
-### ΔE 距离
+```
+Lab(RGB平均) ≠ Lab值的平均
+```
 
-在 Lab 空间中，两色之间的欧氏距离 ΔE = √((L₁-L₂)² + (a₁-a₂)² + (b₁-b₂)²) 直接对应人眼感知差异：
-- ΔE < 1：几乎无法察觉
-- ΔE 1-2：需仔细观察
-- ΔE 2-10：可察觉差异
-- ΔE > 10：明显不同的颜色
+Lab 空间平均的结果在感知上更准确。这适用于三个场景：
+- palette 模式：Eagle 调色板主色调按 ratio 在 Lab 空间加权平均
+- sampled 模式：缩略图像素在 Lab 空间算术平均
+- 目标图网格采样：每格像素在 Lab 空间算术平均
+
+### L 通道加权
+
+人眼有 ~1.2 亿视杆细胞感知亮暗，只有 ~600 万视锥细胞感知颜色。亮度分辨率远高于色彩分辨率。
+
+距离公式中给 L 通道 2 倍权重：
+
+```
+距离 = 2·ΔL² + Δa² + Δb²
+```
+
+效果：算法优先保证亮度匹配，接受轻微的色彩偏差。生成的马赛克远看轮廓更清晰、明暗层次更分明。
 
 ---
 
-## KD-Tree 空间索引
+## 瓦片索引与匹配
 
-### 问题
+### 两种模式
 
-图库可能有数千到数万张图片，每张瓦片位置都需要找到 Lab 颜色最接近的图片。暴力搜索 O(n) 对每个格子都扫描全部图库，乘以 gridCols × gridRows 个格子，计算量巨大。
+#### 粗略模式（palette）
 
-### 解法
+使用 Eagle 为每张图自动提取的主色调（`item.palettes`，通常 3-6 个聚类中心色 + 面积占比）。每张素材图的代表色 = 所有主色调在 Lab 空间的加权平均。
 
-将所有图库图片的 Lab 平均色构建为 3D KD-Tree（K=3，对应 L/a/b 三个维度）。
+匹配方式：KD-Tree 单最近邻搜索。
+
+优点：不加载任何图片，构建极快。
+缺点：调色板是颜色聚类的近似值，精度有限；无空间结构信息。
+
+#### 精确模式（sampled）—— 5×5 子块匹配
+
+基于 Robert Silvers（MIT Media Lab, 1996）的原始 Photomosaic 算法。
+
+**索引构建**：
+
+1. 加载每张素材图的缩略图（Eagle 自动生成，通常 256×256）
+2. 按瓦片形状（如 1:1、16:9）从中心裁剪
+3. 将裁剪区域切成 5×5 = 25 个子块
+4. 每个子块内逐像素 RGB→Lab，算 Lab 平均值
+5. 存储结构：`{ lab: [整体Lab], labs: [25个子块Lab] }`
+
+整体 Lab = 25 个子块 Lab 的平均值，用于 KD-Tree 粗筛。
+
+**两阶段匹配**：
+
+```
+目标格子（整体 Lab + 25 个子块 Lab）
+       │
+       ▼ 第一阶段：KD-Tree 粗筛（3 维，O(log n)）
+       │
+  top-50 候选（整体颜色接近的 50 张素材图）
+       │
+       ▼ 第二阶段：5×5 子块精排（75 维，暴力比较 50 个）
+       │
+  子块距离最小的那张 → 最终结果
+```
+
+第一阶段用整体 Lab（3 维）在 KD-Tree 中搜索 top-50 候选，复杂度 O(log n)。第二阶段对 50 个候选逐一计算 25 个子块的距离总和，取最小值。
+
+**为什么需要两阶段**：
+
+KD-Tree 在高维（>10 维）效率急剧下降（维度灾难）。5×5 子块 × 3 通道 = 75 维，直接用 KD-Tree 会退化为暴力搜索。两阶段方案在 3 维空间用 KD-Tree 快速缩小范围，再在小候选集内做高维精确比较。
+
+计算量对比（假设 10000 张素材，4800 个格子）：
+
+```
+暴力全搜：4800 × 10000 × 75 维 = 36 亿次运算  → JS 约 7 秒
+两阶段：  4800 × O(log 10000) + 4800 × 50 × 25 = ~600 万次  → <100ms
+```
+
+**5×5 子块能捕获什么**：
+
+单一平均色无法区分「均匀灰」和「左黑右白」（两者平均色相同）。5×5 子块保留了粗粒度的空间明暗分布，能区分这类情况。这不是真正的边缘检测，而是低分辨率的空间结构匹配——在瓦片尺度下已经足够。
+
+### KD-Tree 空间索引
+
+将所有素材图的 Lab 平均色构建为 3D KD-Tree（K=3，对应 L/a/b 三个维度）。
 
 **构建过程**：
-- 将图库按当前维度的 Lab 值排序，取中位数作为分割点
+- 将素材按当前维度的 Lab 值排序，取中位数作为分割点
 - 左子树包含该维度值 < 中位数的图片，右子树包含 ≥ 中位数的
 - 下一层切换到下一维度（L→a→b→L→...），递归至叶子
 
-**查询过程（最近邻搜索）**：
-- 沿着树向下搜索目标点应该落在的叶子
-- 回溯时检查：如果目标点到分割平面的距离 < 当前最佳距离，另一侧子树可能有更近的点，也需要搜索
-- 剪枝策略使平均复杂度从 O(n) 降到 O(log n)
+**单最近邻搜索**（palette 模式）：
+- 沿树向下到叶子，回溯时检查分割平面距离，必要时搜索另一侧
+- 平均复杂度 O(log n)
+
+**top-K 最近邻搜索**（sampled 模式）：
+- 维护大小为 K 的最大堆（按距离降序）
+- 遍历时将更近的候选替换堆顶
+- 剪枝条件：目标到分割平面的距离 < 堆中最大距离时才搜索另一侧
 
 ### 多样性约束
 
-搜索时传入 `excluded` 集合（附近已用过的图片 ID），跳过这些图片。查找的不是全局最近邻，而是排除约束后的最近邻。
+纯颜色匹配会导致相邻区域选到同一张图片。`usageGrid[row][col]` 记录每个位置使用的图片 ID，对当前位置 Manhattan 距离 ≤ `repeatDistance` 范围内的已用图片加入排除集，KD-Tree 搜索时跳过这些图片。
+
+排除后所有候选都被排除时，自动回退到无排除搜索。
+
+### 缓存策略
+
+按「素材库 + 瓦片形状」为 key 缓存到磁盘：
+
+```
+~/.photomosaic/cache/{库名}_{hash}/tile_index_{shape}.json
+```
+
+缓存文件带 `version` 字段（当前 v2），读取时版本不匹配则丢弃重建。切换素材库时清除全部缓存。
+
+palette 模式无磁盘缓存（构建足够快），sampled 模式有磁盘缓存。
 
 ---
 
@@ -87,14 +215,14 @@ CIELAB（CIE 1976 L\*a\*b\*）色彩空间是为感知均匀性设计的：
 
 ### 设计目标
 
-用户点击生成后，应立即开始看到结果从第一行逐渐向下生成，而非「扫描半天 → 突然完成」。
+用户点击生成后，应立即开始看到结果从第一行逐渐向下生成，而非「等待 → 突然完成」。
 
 ### 管线结构
 
 ```
 for each row:
     for each cell in row:
-        1. match: KD-Tree 查找最佳瓦片 (CPU)
+        1. match: 两阶段搜索最佳瓦片 (CPU)
         2. load:  loadImage() 加载瓦片图片 (IO)
         3. render: drawImage() 绘制到 baseCanvas (CPU)
     
@@ -104,25 +232,9 @@ for each row:
 
 ### 关键设计决策
 
-**逐行 yield 而非逐格 yield**：`setTimeout(0)` 每次调用有 ~4ms 调度开销。80列×60行=4800格，逐格 yield 会产生 4800×4ms = 19.2s 的纯调度开销。逐行 yield 只有 60×4ms = 0.24s，几乎可忽略。
+**逐行 yield 而非逐格 yield**：`setTimeout(0)` 每次调用有 ~4ms 调度开销。80列×60行=4800格，逐格 yield 产生 4800×4ms = 19.2s 的纯调度开销。逐行 yield 只有 60×4ms = 0.24s。
 
-**逐行 yield 而非一次性渲染**：虽然一次性渲染看起来没有 yield 开销，但浏览器的 `loadImage()` 是异步 IO。没有 yield 点，浏览器无法并行处理 IO 队列中的图片解码请求，实际上更慢。逐行 yield 让浏览器在 CPU 渲染当前行的同时，后台解码下一行需要的图片。
-
----
-
-## 瓦片多样性约束
-
-### 问题
-
-纯粹按颜色匹配，相邻区域颜色相近时会选到同一张图片，造成大面积重复。
-
-### usageGrid + Manhattan 距离排除
-
-- `usageGrid[row][col]` 记录每个位置使用的图片 ID
-- 对当前位置 (row, col)，计算 Manhattan 距离 ≤ repeatDistance 范围内的所有已用图片 ID，加入 excluded 集合
-- KD-Tree 搜索时跳过 excluded 中的图片
-
-`repeatDistance` 即「多样性」参数，值越大，排除范围越大，局部需要的不同图片越多。当图库太小不足以满足排除约束时，自动允许重复。
+**逐行 yield 而非一次性渲染**：没有 yield 点，浏览器无法并行处理 IO 队列中的图片解码请求。逐行 yield 让浏览器在 CPU 渲染当前行的同时，后台解码下一行需要的图片。
 
 ---
 
@@ -130,7 +242,7 @@ for each row:
 
 ### 原理
 
-纯瓦片马赛克远看会偏色（瓦片的平均色无法完美匹配目标色）。叠色在每个瓦片上覆盖一层半透明的目标颜色，提升远看时的色彩还原度。
+纯瓦片马赛克远看会偏色（瓦片的平均色无法完美匹配目标色）。在每个瓦片上覆盖一层半透明的目标颜色，提升远看时的色彩还原度。
 
 ### 实现
 
@@ -142,106 +254,46 @@ for each cell:
     ctx.fillRect(cellX, cellY, tileW, tileH)
 ```
 
-叠色在逐行渲染回调中 per-row 应用，避免渲染完成后的二次处理和色彩突变。生成完成后调节 fidelity 值，直接用 `compositeToOutput` 重新合成，无需重新生成。
+叠色在逐行渲染回调中 per-row 应用。生成完成后调节 fidelity 值，直接用 `compositeToOutput` 重新合成，无需重新生成。
 
 ---
 
 ## 内存管理与异步序列化
 
-### 问题
+批量生成多张图片时，每张图的 baseCanvas（可达 16000×12000px）不能全部驻留内存。生成完成后，将 baseCanvas 序列化为 temp PNG 写入磁盘，释放 Canvas 对象。查看时从磁盘加载。
 
-批量生成多张图片时，每张图的 baseCanvas（可达 16000×12000px）不能全部驻留内存。
-
-### 方案
-
-生成完成后，将 baseCanvas 序列化为 temp PNG 写入磁盘（`temp/base_{itemId}_{timestamp}.png`），释放 Canvas 对象。查看时从磁盘加载回来。
-
-### 异步写入
-
-使用 `canvas.toBlob()` + `FileReader.readAsArrayBuffer()` + `fs.writeFile()` 异步管线代替同步的 `canvas.toDataURL()` + `fs.writeFileSync()`。避免大尺寸 Canvas 序列化阻塞主线程导致 UI 冻结（16000px 画布的同步序列化会阻塞 ~1 秒）。
+使用 `canvas.toBlob()` + `FileReader.readAsArrayBuffer()` + `fs.writeFile()` 异步管线，避免同步序列化阻塞主线程（16000px 画布的同步序列化会阻塞 ~1 秒）。
 
 插件退出时自动清理所有 temp 文件。
 
 ---
 
-## 缩放平移查看器（Viewer）
+## 缩放平移查看器
 
-### 交互状态追踪
+查看器维护 `userInteracted` 标志位。所有操作（参数调整、生成、fidelity 滑块、resize）调用 `softFit()`，仅在用户未手动操作时自动适配。`resetInteraction()` 仅在切换不同图片时调用。
 
-查看器维护 `userInteracted` 标志位，追踪用户是否手动缩放或平移过：
-
-- **wheel / drag**：设置 `userInteracted = true`
-- **fitToContainer()**：强制适配容器并重置 `userInteracted = false`
-- **softFit()**：仅在 `!userInteracted` 时执行 fitToContainer，否则只更新 `minScale`
-- **resetInteraction()**：重置 `userInteracted = false`，下次 softFit 时执行 fit
-
-### 视觉稳定性原则
-
-所有操作（参数调整、生成开始/进行/完成、色彩还原度滑块、窗口 resize）调用 `softFit()` 而非 `fitToContainer()`，确保用户手动调整过的缩放/平移状态不被打断。
-
-唯一触发 `resetInteraction()` 的场景：在侧栏切换到不同图片时。相同图片的点击不重置。
-
-### minScale 动态更新
-
-`softFit()` 每次调用都会重新计算 `minScale`（基于当前 canvas 尺寸和容器尺寸），确保切换不同输出宽度后缩放下限始终正确。
-
----
-
-## 瓦片索引缓存
-
-### 缓存策略
-
-按「素材库名称 + 瓦片形状」为 key 缓存到磁盘：
-
-```
-插件目录/cache/{libraryName}/{shape}.json   (如 cache/我的素材库/1x1.json)
-```
-
-- 内存中使用 `tileIndexCache` Map 按 shape 键缓存 `{ tiles, kdRoot }`
-- 首次构建时同时写入磁盘 JSON
-- 后续启动时从磁盘加载，跳过完整构建
-- 切换素材库时清除全部缓存
-
-### 颜色匹配模式
-
-- **palette 模式**：使用 Eagle 内置调色板颜色（`item.palettes`），无需加载图片，构建极快
-- **sampled 模式**：实际加载每张缩略图提取平均色，更精确但首次构建慢
-
-### 文件夹排除
-
-用户可通过「重建索引」按钮触发文件夹选择弹窗，排除不想参与马赛克的文件夹。排除配置持久化到 `cache/{libraryName}/excluded_folders.json`。
+`softFit()` 每次调用都会重新计算 `minScale`，确保切换不同输出宽度后缩放下限正确。
 
 ---
 
 ## Per-Image 独立参数
 
-每张图片有自己的 settings 对象（outputWidth, density, tileShape, diversity, fidelity）。切换图片时：
-- `loadSettingsToUI()` 将该图参数同步到 UI 控件
-- `saveUIToSettings()` 在参数变化时保存到当前图的 settings
-
-批量生成时，每张图按自己的参数独立生成。
+每张图片有自己的 settings 对象（outputWidth, density, tileShape, diversity, fidelity）。切换图片时 `loadSettingsToUI()` 同步参数到 UI，修改参数时 `saveUIToSettings()` 保存到当前图。批量生成时每张图按自己的参数独立生成。
 
 ---
 
 ## 批量生成与自由切换
 
-批量生成过程中，用户可以自由点击侧栏切换查看任意图片：
-
-- `generatingIndex`：追踪当前正在生成的图片 index
-- `activeIndex`：追踪用户正在查看的图片 index
-- 视觉更新回调仅在 `activeIndex === generatingIndex` 时更新 outputCanvas
-- 切换到 processing 状态的图片时，blit 当前 `liveBaseCanvas` 的渲染进度
-- 切换到 done 状态的图片时，从 temp 文件加载并合成
-- 切换到 pending 状态的图片时，显示像素化 placeholder
+`generatingIndex` 追踪正在生成的图，`activeIndex` 追踪正在查看的图。视觉更新回调仅在两者相等时更新 outputCanvas。切换到 processing 图时显示当前渲染进度，done 图从 temp 加载，pending 图显示像素化 placeholder。
 
 ---
 
 ## Eagle API 集成
 
-- `eagle.item.getSelected()`：获取用户选中的图片列表
+- `eagle.item.getSelected()`：获取选中图片列表
 - `eagle.item.getAll()`：获取图库所有图片，用于构建瓦片索引
-- `eagle.item.addFromPath(filePath, options)`：将生成的马赛克图保存到 Eagle
-- `eagle.folder.getAll()` / `eagle.folder.create()`：查找或创建「马赛克图片」文件夹
-- `eagle.window.hide()` / `eagle.window.close()` / `eagle.window.setAlwaysOnTop()`：窗口控制
-- `eagle.app.theme` / `eagle.onThemeChanged()`：主题适配
+- `eagle.item.addFromPath(filePath, options)`：保存马赛克图到 Eagle
+- `eagle.folder.getAll()` / `eagle.folder.create()`：管理「马赛克图片」文件夹
 - `eagle.library.info()`：获取当前素材库信息用于缓存分区
+- `eagle.app.theme` / `eagle.onThemeChanged()`：主题适配
+- `eagle.window.*`：窗口控制
