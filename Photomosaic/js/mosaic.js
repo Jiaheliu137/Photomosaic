@@ -2,6 +2,9 @@
 // Tile database builders
 // ============================================================
 
+const SUB_GRID = 5;       // 5×5 sub-block matching grid
+const TOP_K = 50;         // candidates from KD-Tree coarse search
+
 function buildTileDatabasePalette(items, onProgress) {
     const tiles = [];
     const imageExts = new Set(['jpg', 'jpeg', 'png', 'bmp', 'webp', 'gif']);
@@ -47,6 +50,35 @@ function buildTileDatabasePalette(items, onProgress) {
     return tiles;
 }
 
+// Helper: compute 5×5 sub-block Lab averages from imageData region
+function computeSubBlockLabs(data, dataWidth, x0, y0, regionW, regionH) {
+    const labs = new Array(SUB_GRID * SUB_GRID);
+    const subW = regionW / SUB_GRID;
+    const subH = regionH / SUB_GRID;
+
+    for (let sr = 0; sr < SUB_GRID; sr++) {
+        for (let sc = 0; sc < SUB_GRID; sc++) {
+            const sx0 = x0 + Math.floor(sc * subW);
+            const sy0 = y0 + Math.floor(sr * subH);
+            const sx1 = x0 + Math.floor((sc + 1) * subW);
+            const sy1 = y0 + Math.floor((sr + 1) * subH);
+
+            let lSum = 0, aSum = 0, bSum = 0, count = 0;
+            for (let py = sy0; py < sy1; py++) {
+                for (let px = sx0; px < sx1; px++) {
+                    const i = (py * dataWidth + px) * 4;
+                    const lab = rgbToLab(data[i], data[i + 1], data[i + 2]);
+                    lSum += lab[0]; aSum += lab[1]; bSum += lab[2];
+                    count++;
+                }
+            }
+            if (count === 0) count = 1;
+            labs[sr * SUB_GRID + sc] = [lSum / count, aSum / count, bSum / count];
+        }
+    }
+    return labs;
+}
+
 async function buildTileDatabaseSampled(items, tileAspect, onProgress, shouldCancel) {
     const candidates = [];
     const imageExts = new Set(['jpg', 'jpeg', 'png', 'bmp', 'webp', 'gif']);
@@ -89,18 +121,22 @@ async function buildTileDatabaseSampled(items, tileAspect, onProgress, shouldCan
         sampleCtx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
         const data = sampleCtx.getImageData(0, 0, sw, sh).data;
 
-        let lSum = 0, aSum = 0, bSum = 0, count = 0;
-        const stride = Math.max(1, Math.floor(data.length / 4 / 2000)) * 4;
-        for (let j = 0; j < data.length; j += stride) {
-            const lab = rgbToLab(data[j], data[j + 1], data[j + 2]);
-            lSum += lab[0]; aSum += lab[1]; bSum += lab[2];
-            count++;
+        // Compute 5×5 sub-block Labs
+        const labs = computeSubBlockLabs(data, sw, 0, 0, sw, sh);
+
+        // Overall average = mean of 25 sub-block Labs
+        let oL = 0, oA = 0, oB = 0;
+        for (let j = 0; j < labs.length; j++) {
+            oL += labs[j][0]; oA += labs[j][1]; oB += labs[j][2];
         }
+        const n = labs.length;
+        const avgLab = [oL / n, oA / n, oB / n];
 
         tiles.push({
             id: candidates[i].id,
             imgPath: candidates[i].imgPath,
-            lab: [lSum / count, aSum / count, bSum / count]
+            lab: avgLab,
+            labs: labs
         });
     }
 
@@ -148,9 +184,13 @@ async function generateMosaic(targetImg, tiles, kdRoot, gridCols, tileW, tileH, 
     const cellH = targetImg.height / gridRows;
     const gridLabs = new Array(totalCells);
     const gridRgbs = new Array(totalCells);
+    const gridSubLabs = new Array(totalCells);
 
     const imgData = sampleCtx.getImageData(0, 0, targetImg.width, targetImg.height).data;
     const imgW = targetImg.width;
+
+    // Check if tiles have sub-block data (sampled mode)
+    const hasSubBlocks = tiles.length > 0 && !!tiles[0].labs;
 
     for (let row = 0; row < gridRows; row++) {
         for (let col = 0; col < gridCols; col++) {
@@ -158,24 +198,52 @@ async function generateMosaic(targetImg, tiles, kdRoot, gridCols, tileW, tileH, 
             const y0 = Math.floor(row * cellH);
             const x1 = Math.min(Math.ceil((col + 1) * cellW), imgW);
             const y1 = Math.min(Math.ceil((row + 1) * cellH), targetImg.height);
+            const regionW = x1 - x0;
+            const regionH = y1 - y0;
 
-            let r = 0, g = 0, b = 0;
-            let lSum = 0, aSum = 0, bSum = 0, count = 0;
+            const idx = row * gridCols + col;
+
+            if (hasSubBlocks && regionW >= SUB_GRID && regionH >= SUB_GRID) {
+                // 5×5 sub-block Labs for fine matching
+                const subLabs = computeSubBlockLabs(imgData, imgW, x0, y0, regionW, regionH);
+                gridSubLabs[idx] = subLabs;
+
+                // Overall average = mean of sub-block Labs
+                let oL = 0, oA = 0, oB = 0;
+                for (let j = 0; j < subLabs.length; j++) {
+                    oL += subLabs[j][0]; oA += subLabs[j][1]; oB += subLabs[j][2];
+                }
+                const n = subLabs.length;
+                gridLabs[idx] = [oL / n, oA / n, oB / n];
+            } else {
+                // Fallback: single Lab average (palette mode or tiny cells)
+                let lSum = 0, aSum = 0, bSum = 0, count = 0;
+                for (let py = y0; py < y1; py++) {
+                    const rowOff = py * imgW;
+                    for (let px = x0; px < x1; px++) {
+                        const i = (rowOff + px) * 4;
+                        const lab = rgbToLab(imgData[i], imgData[i + 1], imgData[i + 2]);
+                        lSum += lab[0]; aSum += lab[1]; bSum += lab[2];
+                        count++;
+                    }
+                }
+                if (count === 0) count = 1;
+                gridLabs[idx] = [lSum / count, aSum / count, bSum / count];
+                gridSubLabs[idx] = null;
+            }
+
+            // RGB average (always needed for placeholder and fidelity overlay)
+            let r = 0, g = 0, b = 0, rgbCount = 0;
             for (let py = y0; py < y1; py++) {
-                const rowOffset = py * imgW;
+                const rowOff = py * imgW;
                 for (let px = x0; px < x1; px++) {
-                    const i = (rowOffset + px) * 4;
-                    const pr = imgData[i], pg = imgData[i + 1], pb = imgData[i + 2];
-                    r += pr; g += pg; b += pb;
-                    const lab = rgbToLab(pr, pg, pb);
-                    lSum += lab[0]; aSum += lab[1]; bSum += lab[2];
-                    count++;
+                    const i = (rowOff + px) * 4;
+                    r += imgData[i]; g += imgData[i + 1]; b += imgData[i + 2];
+                    rgbCount++;
                 }
             }
-            if (count === 0) count = 1;
-            const idx = row * gridCols + col;
-            gridRgbs[idx] = [Math.round(r / count), Math.round(g / count), Math.round(b / count)];
-            gridLabs[idx] = [lSum / count, aSum / count, bSum / count];
+            if (rgbCount === 0) rgbCount = 1;
+            gridRgbs[idx] = [Math.round(r / rgbCount), Math.round(g / rgbCount), Math.round(b / rgbCount)];
         }
     }
 
@@ -224,7 +292,15 @@ async function generateMosaic(targetImg, tiles, kdRoot, gridCols, tileW, tileH, 
                     }
                 }
             }
-            const bestIdx = findBestTileKD(kdRoot, gridLabs[idx], tiles, excluded);
+
+            // Two-stage matching if sub-block data available, else single-stage
+            let bestIdx;
+            if (gridSubLabs[idx]) {
+                bestIdx = findBestTileSubBlock(kdRoot, gridLabs[idx], gridSubLabs[idx], tiles, excluded, TOP_K);
+            } else {
+                bestIdx = findBestTileKD(kdRoot, gridLabs[idx], tiles, excluded);
+            }
+
             matchIndices[idx] = bestIdx;
             if (bestIdx >= 0) usageGrid[row][col] = tiles[bestIdx].id;
 

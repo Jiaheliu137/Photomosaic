@@ -2,6 +2,8 @@
 // Tile index cache (memory + disk) & library sync
 // ============================================================
 
+const CACHE_VERSION = 2;  // Bump when index format changes
+
 let currentLibraryName = null;
 let currentLibraryId = null;
 let currentLibraryCacheDir = null;
@@ -38,6 +40,8 @@ function tryLoadDiskCache(shapeStr) {
     if (!fs.existsSync(fp)) return null;
     try {
         const data = JSON.parse(fs.readFileSync(fp, 'utf-8'));
+        // Reject cache with mismatched version (format changed)
+        if (data.version !== CACHE_VERSION) return null;
         if (data.tiles && data.tiles.length > 0) return data.tiles;
     } catch {}
     return null;
@@ -45,7 +49,7 @@ function tryLoadDiskCache(shapeStr) {
 
 function saveDiskCache(shapeStr, tiles) {
     const fp = getCachePath(shapeStr);
-    try { fs.writeFileSync(fp, JSON.stringify({ tiles })); } catch {}
+    try { fs.writeFileSync(fp, JSON.stringify({ version: CACHE_VERSION, tiles })); } catch {}
 }
 
 function loadExcludedFolders() {
