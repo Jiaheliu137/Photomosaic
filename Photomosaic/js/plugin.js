@@ -411,7 +411,7 @@ eagle.onPluginCreate(async (plugin) => {
     try {
         const selected = await eagle.item.getSelected();
         if (selected && selected.length > 0) {
-            const supportedExts = new Set(['jpg', 'jpeg', 'png', 'bmp', 'webp', 'gif']);
+            const supportedExts = new Set(['jpg', 'jpeg', 'png', 'bmp', 'webp']);
             const validItems = [];
             const skippedNames = [];
             for (const item of selected) {

@@ -7,7 +7,7 @@ const TOP_K = 50;         // candidates from KD-Tree coarse search
 
 function buildTileDatabasePalette(items, onProgress) {
     const tiles = [];
-    const imageExts = new Set(['jpg', 'jpeg', 'png', 'bmp', 'webp', 'gif']);
+    const imageExts = new Set(['jpg', 'jpeg', 'png', 'bmp', 'webp']);
 
     for (let i = 0; i < items.length; i++) {
         const item = items[i];
@@ -81,7 +81,7 @@ function computeSubBlockLabs(data, dataWidth, x0, y0, regionW, regionH) {
 
 async function buildTileDatabaseSampled(items, tileAspect, onProgress, shouldCancel) {
     const candidates = [];
-    const imageExts = new Set(['jpg', 'jpeg', 'png', 'bmp', 'webp', 'gif']);
+    const imageExts = new Set(['jpg', 'jpeg', 'png', 'bmp', 'webp']);
 
     for (const item of items) {
         if (!imageExts.has((item.ext || '').toLowerCase())) continue;

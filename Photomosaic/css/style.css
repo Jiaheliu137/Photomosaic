@@ -684,6 +684,12 @@ body {
     font-size: 13px;
     color: var(--text-muted);
 }
+.empty-state-formats {
+    font-size: 11px;
+    color: var(--text-muted);
+    opacity: 0.6;
+    margin-top: 6px;
+}
 
 /* ---- Saved indicator on sidebar ---- */
 
