@@ -623,13 +623,23 @@ eagle.onPluginCreate(async (plugin) => {
             const tempFile = path.join(tempDir, `photomosaic_${timestamp}.png`);
             fs.writeFileSync(tempFile, Buffer.from(base64Data, 'base64'));
 
-            const itemName = (activeIndex >= 0 && batchQueue[activeIndex])
-                ? `Photomosaic_${batchQueue[activeIndex].name}`
-                : `Photomosaic_${timestamp}`;
+            const qItem = batchQueue[activeIndex];
+            const rnd = Math.random().toString(36).slice(2, 7);
+            const baseName = qItem ? qItem.name : String(timestamp);
+            const itemName = `${rnd}_${baseName}`.slice(0, 200);
+            const s = qItem ? qItem.settings : null;
+            const tags = s ? [
+                `宽度:${s.outputWidth}px`,
+                `精细度:${s.density}`,
+                `形状:${s.tileShape}`,
+                `多样性:${s.diversity}`,
+                `还原度:${s.fidelity}%`,
+                `匹配:${getIndexMode() === 'palette' ? '粗略' : '精确'}`
+            ] : ['photomosaic'];
 
             await eagle.item.addFromPath(tempFile, {
                 name: itemName,
-                tags: ['photomosaic', 'generated'],
+                tags: tags,
                 folders: [folderId],
             });
 
@@ -679,9 +689,21 @@ eagle.onPluginCreate(async (plugin) => {
                 const outFile = path.join(tempDir, `photomosaic_${item.id}_${Date.now()}.png`);
                 fs.writeFileSync(outFile, Buffer.from(base64Data, 'base64'));
 
+                const rnd = Math.random().toString(36).slice(2, 7);
+                const saveName = `${rnd}_${item.name}`.slice(0, 200);
+                const s = item.settings;
+                const saveTags = [
+                    `宽度:${s.outputWidth}px`,
+                    `精细度:${s.density}`,
+                    `形状:${s.tileShape}`,
+                    `多样性:${s.diversity}`,
+                    `还原度:${s.fidelity}%`,
+                    `匹配:${getIndexMode() === 'palette' ? '粗略' : '精确'}`
+                ];
+
                 await eagle.item.addFromPath(outFile, {
-                    name: `Photomosaic_${item.name}`,
-                    tags: ['photomosaic', 'generated', 'batch'],
+                    name: saveName,
+                    tags: saveTags,
                     folders: [folderId],
                 });
 
