@@ -102,9 +102,13 @@ async function generateForItem(index, tiles, kdRoot, plugin, progressPrefix) {
 
     const oldTemp = qItem.tempBasePath;
     qItem.tempBasePath = null;
+    qItem._savingTemp = true;
+    updateSaveButtonState();
     setTimeout(async () => {
         if (oldTemp) { try { fs.unlinkSync(oldTemp); } catch {} }
         qItem.tempBasePath = await saveCanvasToTemp(result.baseCanvas, qItem.id, plugin.path);
+        qItem._savingTemp = false;
+        updateSaveButtonState();
     }, 100);
 }
 
@@ -230,7 +234,22 @@ eagle.onPluginCreate(async (plugin) => {
     viewer = initViewer();
 
     const btnRebuild = document.getElementById('btnRebuildIndex');
-    const indexModeSelect = document.getElementById('indexMode');
+    const indexModeToggle = document.getElementById('indexModeToggle');
+
+    // Wire index mode toggle buttons
+    indexModeToggle.querySelectorAll('.index-mode-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            indexModeToggle.querySelectorAll('.index-mode-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            setIndexMode(btn.dataset.value);
+            tileIndexCache.clear();
+            cachedTiles = null;
+            cachedKdRoot = null;
+            updateRebuildLabel();
+            renderCrossLibraryPanel(getCurrentShapeStr());
+            updateCacheStatus();
+        });
+    });
 
     function getCurrentShapeStr() {
         return batchQueue[activeIndex] ? batchQueue[activeIndex].settings.tileShape : (tileShapeSelect.value || '1:1');
@@ -238,7 +257,7 @@ eagle.onPluginCreate(async (plugin) => {
 
     function updateRebuildLabel() {
         const shape = getCurrentShapeStr();
-        const mode = indexModeSelect.value;
+        const mode = getIndexMode();
         if (mode === 'palette') {
             btnRebuild.style.display = 'none';
         } else {
@@ -262,6 +281,8 @@ eagle.onPluginCreate(async (plugin) => {
     if (mosaicFolderId) excludedFolderIds.add(mosaicFolderId);
     try { saveExcludedFolders(); } catch {}
     updateRebuildLabel();
+    initCrossLibDropdown();
+    renderCrossLibraryPanel(getCurrentShapeStr());
     updateCacheStatus();
 
     let isRebuilding = false;
@@ -361,17 +382,11 @@ eagle.onPluginCreate(async (plugin) => {
         isRebuilding = false;
         rebuildCancelled = false;
         updateRebuildLabel();
+        renderCrossLibraryPanel(getCurrentShapeStr());
         updateButtonStates();
         updateCacheStatus();
     });
 
-    indexModeSelect.addEventListener('change', () => {
-        tileIndexCache.clear();
-        cachedTiles = null;
-        cachedKdRoot = null;
-        updateRebuildLabel();
-        updateCacheStatus();
-    });
 
     function onSettingChange() {
         densityValue.textContent = densitySlider.value;
@@ -386,6 +401,7 @@ eagle.onPluginCreate(async (plugin) => {
 
         updateGenerateButtonText();
         updateRebuildLabel();
+        renderCrossLibraryPanel(getCurrentShapeStr());
     }
 
     densitySlider.addEventListener('input', onSettingChange);
@@ -476,9 +492,7 @@ eagle.onPluginCreate(async (plugin) => {
     }
 
     function updateButtonStates() {
-        const hasDone = batchQueue.some(q => q.status === 'done');
-        btnSave.disabled = !hasDone;
-        btnSaveAll.disabled = !hasDone || batchQueue.length <= 1;
+        updateSaveButtonState();
         const empty = batchQueue.length === 0;
         btnGenerate.disabled = empty;
         btnGenerateAll.disabled = empty;
@@ -494,6 +508,10 @@ eagle.onPluginCreate(async (plugin) => {
             return;
         }
         if (activeIndex < 0 || !batchQueue[activeIndex]) return;
+        if (getIndexMode() === 'sampled' && !hasAnyIndexSelected()) {
+            showAlert('请至少选择一个索引库');
+            return;
+        }
 
         isBatchRunning = true;
         isBatchCancelled = false;
@@ -529,7 +547,7 @@ eagle.onPluginCreate(async (plugin) => {
                 setProgress(0, 0, '已取消');
             } else {
                 if (batchQueue[activeIndex]) batchQueue[activeIndex].status = 'error';
-                alert('生成失败: ' + err.message);
+                showAlert('生成失败: ' + err.message);
                 setProgress(0, 0, '出错: ' + err.message);
             }
             generatingIndex = -1;
@@ -551,6 +569,11 @@ eagle.onPluginCreate(async (plugin) => {
             btnGenerateAll.textContent = '取消中...';
             btnGenerateAll.disabled = true;
             btnGenerate.disabled = true;
+            return;
+        }
+
+        if (getIndexMode() === 'sampled' && !hasAnyIndexSelected()) {
+            showAlert('请至少选择一个索引库');
             return;
         }
 
@@ -613,7 +636,7 @@ eagle.onPluginCreate(async (plugin) => {
             if (err.message === 'CANCELLED') {
                 setProgress(0, 0, '已取消');
             } else {
-                alert('生成失败: ' + err.message);
+                showAlert('生成失败: ' + err.message);
                 setProgress(0, 0, '出错: ' + err.message);
             }
             isBatchRunning = false;
@@ -679,7 +702,7 @@ eagle.onPluginCreate(async (plugin) => {
                 showDoneEstimate(batchQueue[activeIndex]);
             }
         } catch (err) {
-            alert('保存失败: ' + err.message);
+            showAlert('保存失败: ' + err.message);
         } finally {
             btnSave.disabled = false;
         }
@@ -737,7 +760,7 @@ eagle.onPluginCreate(async (plugin) => {
             renderSidebarUI();
             setProgress(1, 1, `已保存 ${unsaved.length} 张到 Eagle 图库 / 马赛克图片`);
         } catch (err) {
-            alert('批量保存失败: ' + err.message);
+            showAlert('批量保存失败: ' + err.message);
         } finally {
             btnSaveAll.disabled = false;
         }
@@ -760,4 +783,6 @@ eagle.onLibraryChanged(async () => {
     cachedTiles = null;
     cachedKdRoot = null;
     currentLibraryCacheDir = null;
+    crossLibrarySelection.clear();
+    renderCrossLibraryPanel(document.getElementById('tileShape').value || '1:1');
 });

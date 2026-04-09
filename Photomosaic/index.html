@@ -94,10 +94,17 @@
                     </div>
                     <div class="setting-row">
                         <label>颜色匹配</label>
-                        <select id="indexMode">
-                            <option value="palette">粗略（Eagle 内置颜色，快）</option>
-                            <option value="sampled">精确（重建颜色索引，首次慢）</option>
-                        </select>
+                        <div class="index-mode-toggle" id="indexModeToggle">
+                            <button type="button" class="index-mode-btn" data-value="palette">粗略</button>
+                            <button type="button" class="index-mode-btn active" data-value="sampled">精确</button>
+                        </div>
+                    </div>
+                    <div id="crossLibraryRow" class="setting-row">
+                        <label>索引库</label>
+                        <div class="cross-lib-dropdown" id="crossLibDropdown">
+                            <div class="cross-lib-trigger" id="crossLibTrigger">选择索引库…</div>
+                            <div class="cross-lib-menu" id="crossLibMenu"></div>
+                        </div>
                     </div>
                     <div class="setting-hint">生成后仍可实时调节色彩还原度，无需重新生成</div>
                 </div>

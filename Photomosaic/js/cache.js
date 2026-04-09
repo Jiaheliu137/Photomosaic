@@ -27,28 +27,49 @@ function getCacheDir() {
     return currentLibraryCacheDir;
 }
 
-function getCachePath(shapeStr) {
-    return path.join(getCacheDir(), `tile_index_${shapeKeyToFileName(shapeStr)}.json`);
+// Filename pattern: tile_index_{shape}_v{version}_{count}.json
+const TILE_INDEX_RE = /^tile_index_(.+)_v(\d+)_(\d+)\.json$/;
+
+function findCacheFile(shapeStr) {
+    const dir = getCacheDir();
+    const shapeName = shapeKeyToFileName(shapeStr);
+    const prefix = `tile_index_${shapeName}_v${CACHE_VERSION}_`;
+    try {
+        const files = fs.readdirSync(dir);
+        for (const f of files) {
+            if (f.startsWith(prefix) && f.endsWith('.json')) return path.join(dir, f);
+        }
+    } catch {}
+    return null;
 }
 
 function hasDiskCache(shapeStr) {
-    return fs.existsSync(getCachePath(shapeStr));
+    return findCacheFile(shapeStr) !== null;
 }
 
 function tryLoadDiskCache(shapeStr) {
-    const fp = getCachePath(shapeStr);
-    if (!fs.existsSync(fp)) return null;
+    const fp = findCacheFile(shapeStr);
+    if (!fp) return null;
     try {
         const data = JSON.parse(fs.readFileSync(fp, 'utf-8'));
-        // Reject cache with mismatched version (format changed)
-        if (data.version !== CACHE_VERSION) return null;
         if (data.tiles && data.tiles.length > 0) return data.tiles;
     } catch {}
     return null;
 }
 
 function saveDiskCache(shapeStr, tiles) {
-    const fp = getCachePath(shapeStr);
+    // Remove old cache files for this shape (any version/count)
+    const dir = getCacheDir();
+    const shapeName = shapeKeyToFileName(shapeStr);
+    const prefix = `tile_index_${shapeName}_`;
+    try {
+        for (const f of fs.readdirSync(dir)) {
+            if (f.startsWith(prefix) && f.endsWith('.json')) {
+                fs.unlinkSync(path.join(dir, f));
+            }
+        }
+    } catch {}
+    const fp = path.join(dir, `tile_index_${shapeName}_v${CACHE_VERSION}_${tiles.length}.json`);
     try { fs.writeFileSync(fp, JSON.stringify({ version: CACHE_VERSION, tiles })); } catch {}
 }
 
@@ -131,9 +152,58 @@ async function syncLibraryId() {
     } catch {}
 }
 
+function discoverExternalIndexes(shapeStr) {
+    const cacheRoot = path.join(require('os').homedir(), '.photomosaic', 'cache');
+    if (!fs.existsSync(cacheRoot)) return [];
+    const currentDir = getCacheDir();
+    const shapeName = shapeKeyToFileName(shapeStr);
+    const prefix = `tile_index_${shapeName}_v${CACHE_VERSION}_`;
+    const results = [];
+    let entries;
+    try { entries = fs.readdirSync(cacheRoot); } catch { return []; }
+    for (const entry of entries) {
+        const dirPath = path.join(cacheRoot, entry);
+        if (dirPath === currentDir) continue;
+        try { if (!fs.statSync(dirPath).isDirectory()) continue; } catch { continue; }
+        // Scan for matching index file by prefix
+        let matchedFile = null;
+        let tileCount = 0;
+        try {
+            for (const f of fs.readdirSync(dirPath)) {
+                if (f.startsWith(prefix) && f.endsWith('.json')) {
+                    matchedFile = f;
+                    const m = f.match(TILE_INDEX_RE);
+                    if (m) tileCount = parseInt(m[3], 10);
+                    break;
+                }
+            }
+        } catch { continue; }
+        if (!matchedFile) continue;
+        const lastUnderscore = entry.lastIndexOf('_');
+        const displayName = lastUnderscore > 0 ? entry.substring(0, lastUnderscore) : entry;
+        results.push({ dirName: entry, displayName, cachePath: path.join(dirPath, matchedFile), tileCount });
+    }
+    return results;
+}
+
+function loadExternalIndex(cachePath) {
+    if (!fs.existsSync(cachePath)) return null;
+    try {
+        const data = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+        if (data.version !== CACHE_VERSION) return null;
+        if (data.tiles && data.tiles.length > 0) return data.tiles;
+    } catch {}
+    return null;
+}
+
+let _currentIndexMode = 'sampled';
+
 function getIndexMode() {
-    const el = document.getElementById('indexMode');
-    return el ? el.value : 'sampled';
+    return _currentIndexMode;
+}
+
+function setIndexMode(mode) {
+    _currentIndexMode = mode;
 }
 
 async function ensureMosaicFolder() {

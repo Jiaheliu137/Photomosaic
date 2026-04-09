@@ -164,6 +164,229 @@ function showDoneEstimate(item) {
     el.innerHTML = lines.map(l => `<div class="estimate-line">${l}</div>`).join('');
 }
 
+// ---- Cross-library index dropdown ----
+
+const CROSS_LIB_LOCAL_KEY = '__local__';
+let crossLibrarySelection = new Map();
+let crossLibDropdownOpen = false;
+
+function renderCrossLibraryPanel(shapeStr) {
+    const row = document.getElementById('crossLibraryRow');
+    const trigger = document.getElementById('crossLibTrigger');
+    const dropdown = document.getElementById('crossLibDropdown');
+    if (!row || !trigger || !dropdown) return;
+
+    // Close dropdown if open
+    crossLibDropdownOpen = false;
+    document.getElementById('crossLibMenu').classList.remove('open');
+
+    const mode = getIndexMode();
+    if (mode !== 'sampled') {
+        dropdown.classList.add('disabled');
+        trigger.textContent = '仅精确模式可用';
+        return;
+    }
+
+    const externals = discoverExternalIndexes(shapeStr);
+    const localHasIndex = hasDiskCache(shapeStr);
+    const localName = currentLibraryName || '当前图库';
+
+    // No externals — show local name only, not interactive
+    if (externals.length === 0) {
+        dropdown.classList.add('disabled');
+        if (!crossLibrarySelection.has(CROSS_LIB_LOCAL_KEY)) {
+            crossLibrarySelection.set(CROSS_LIB_LOCAL_KEY, { cachePath: null, selected: true });
+        }
+        trigger.textContent = localName + '（本库）';
+        return;
+    }
+
+    dropdown.classList.remove('disabled');
+
+    // Clean stale entries
+    const validKeys = new Set([CROSS_LIB_LOCAL_KEY, ...externals.map(e => e.dirName)]);
+    for (const key of crossLibrarySelection.keys()) {
+        if (!validKeys.has(key)) crossLibrarySelection.delete(key);
+    }
+
+    // Default: local always selected
+    if (!crossLibrarySelection.has(CROSS_LIB_LOCAL_KEY)) {
+        crossLibrarySelection.set(CROSS_LIB_LOCAL_KEY, { cachePath: null, selected: true });
+    }
+    for (const ext of externals) {
+        if (!crossLibrarySelection.has(ext.dirName)) {
+            crossLibrarySelection.set(ext.dirName, { cachePath: ext.cachePath, selected: false });
+        }
+    }
+
+    // Build menu HTML
+    const menu = document.getElementById('crossLibMenu');
+    const allSelected = crossLibrarySelection.get(CROSS_LIB_LOCAL_KEY)?.selected !== false
+        && externals.every(e => crossLibrarySelection.get(e.dirName)?.selected);
+    let html = `<label class="cross-lib-item cross-lib-select-all">` +
+        `<input type="checkbox" id="crossLibSelectAll" ${allSelected ? 'checked' : ''}> ` +
+        `<span class="cross-lib-name">全选</span>` +
+        `</label>`;
+
+    // Local library entry — always selectable
+    const localChecked = crossLibrarySelection.get(CROSS_LIB_LOCAL_KEY).selected ? 'checked' : '';
+    let localCountText = '';
+    if (localHasIndex) {
+        const localFile = findCacheFile(shapeStr);
+        if (localFile) {
+            const m = path.basename(localFile).match(TILE_INDEX_RE);
+            if (m) localCountText = parseInt(m[3], 10) + ' 张';
+        }
+    } else {
+        localCountText = '首次自动构建';
+    }
+    html += `<label class="cross-lib-item">` +
+        `<input type="checkbox" data-dir="${CROSS_LIB_LOCAL_KEY}" ${localChecked}> ` +
+        `<span class="cross-lib-name">${localName}</span>` +
+        `<span class="cross-lib-tag">本库</span>` +
+        `<span class="cross-lib-count">${localCountText}</span>` +
+        `</label>`;
+
+    // External libraries
+    for (const ext of externals) {
+        const checked = crossLibrarySelection.get(ext.dirName).selected ? 'checked' : '';
+        html += `<label class="cross-lib-item">` +
+            `<input type="checkbox" data-dir="${ext.dirName}" ${checked}> ` +
+            `<span class="cross-lib-name">${ext.displayName}</span>` +
+            `<span class="cross-lib-count">${ext.tileCount > 0 ? ext.tileCount + ' 张' : ''}</span>` +
+            `</label>`;
+    }
+    menu.innerHTML = html;
+
+    // Bind checkbox events
+    const itemCbs = menu.querySelectorAll('input[type="checkbox"][data-dir]');
+    const selectAllCb = document.getElementById('crossLibSelectAll');
+
+    itemCbs.forEach(cb => {
+        cb.addEventListener('change', () => {
+            const entry = crossLibrarySelection.get(cb.dataset.dir);
+            if (entry) entry.selected = cb.checked;
+            tileIndexCache.clear();
+            cachedTiles = null;
+            cachedKdRoot = null;
+            // Sync select-all state
+            if (selectAllCb) {
+                selectAllCb.checked = [...itemCbs].every(c => c.checked);
+            }
+            updateCrossLibTriggerText();
+        });
+    });
+
+    if (selectAllCb) {
+        selectAllCb.addEventListener('change', () => {
+            const val = selectAllCb.checked;
+            itemCbs.forEach(cb => {
+                cb.checked = val;
+                const entry = crossLibrarySelection.get(cb.dataset.dir);
+                if (entry) entry.selected = val;
+            });
+            tileIndexCache.clear();
+            cachedTiles = null;
+            cachedKdRoot = null;
+            updateCrossLibTriggerText();
+        });
+    }
+
+    updateCrossLibTriggerText();
+}
+
+function updateCrossLibTriggerText() {
+    const trigger = document.getElementById('crossLibTrigger');
+    if (!trigger) return;
+    let count = 0;
+    let names = [];
+    for (const [key, entry] of crossLibrarySelection) {
+        if (entry.selected) {
+            count++;
+            if (key === CROSS_LIB_LOCAL_KEY) {
+                names.push((currentLibraryName || '当前图库') + '(本库)');
+            } else {
+                const lastUnderscore = key.lastIndexOf('_');
+                names.push(lastUnderscore > 0 ? key.substring(0, lastUnderscore) : key);
+            }
+        }
+    }
+    if (count === 0) {
+        trigger.textContent = '未选择索引库';
+    } else if (count === 1) {
+        trigger.textContent = names[0];
+    } else {
+        trigger.textContent = `已选 ${count} 个索引库`;
+    }
+}
+
+function initCrossLibDropdown() {
+    const trigger = document.getElementById('crossLibTrigger');
+    const menu = document.getElementById('crossLibMenu');
+    if (!trigger || !menu) return;
+
+    trigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (trigger.closest('.cross-lib-dropdown.disabled')) return;
+        crossLibDropdownOpen = !crossLibDropdownOpen;
+        menu.classList.toggle('open', crossLibDropdownOpen);
+    });
+
+    document.addEventListener('click', (e) => {
+        if (crossLibDropdownOpen && !menu.contains(e.target) && e.target !== trigger) {
+            crossLibDropdownOpen = false;
+            menu.classList.remove('open');
+        }
+    });
+}
+
+function getSelectedExternalPaths() {
+    const paths = [];
+    for (const [key, entry] of crossLibrarySelection) {
+        if (key !== CROSS_LIB_LOCAL_KEY && entry.selected) {
+            paths.push(entry.cachePath);
+        }
+    }
+    return paths;
+}
+
+function isLocalIndexSelected() {
+    const entry = crossLibrarySelection.get(CROSS_LIB_LOCAL_KEY);
+    return entry ? entry.selected : true;
+}
+
+function hasAnyIndexSelected() {
+    if (crossLibrarySelection.size === 0) return true; // No dropdown = local-only
+    for (const [, entry] of crossLibrarySelection) {
+        if (entry.selected) return true;
+    }
+    return false;
+}
+
+// ---- Save button state ----
+
+function updateSaveButtonState() {
+    const btnSave = document.getElementById('btnSave');
+    const btnSaveAll = document.getElementById('btnSaveAll');
+    if (!btnSave) return;
+    const item = batchQueue[activeIndex];
+    const anySaving = batchQueue.some(q => q._savingTemp);
+    if (item && item._savingTemp) {
+        btnSave.disabled = true;
+        btnSave.textContent = '准备中…';
+    } else if (item && item.status === 'done') {
+        btnSave.disabled = false;
+        btnSave.textContent = '保存到 Eagle';
+    } else {
+        btnSave.disabled = true;
+        btnSave.textContent = '保存到 Eagle';
+    }
+    if (btnSaveAll) {
+        const hasDone = batchQueue.some(q => q.status === 'done');
+        btnSaveAll.disabled = !hasDone || anySaving || batchQueue.length <= 1;
+    }
+}
+
 // ---- Generate button text ----
 
 function updateGenerateButtonText() {
@@ -339,6 +562,7 @@ async function onSidebarItemClick(index) {
     }
 
     updateGenerateButtonText();
+    updateSaveButtonState();
 }
 
 async function showResult(item, index) {
@@ -360,6 +584,7 @@ function showModal(html) {
         const btnOk = document.getElementById('modalConfirm');
         const btnCancel = document.getElementById('modalCancel');
         body.innerHTML = html;
+        btnCancel.style.display = '';
         overlay.style.display = 'flex';
 
         function cleanup(result) {
@@ -372,5 +597,25 @@ function showModal(html) {
         function onCancel() { cleanup(false); }
         btnOk.addEventListener('click', onOk);
         btnCancel.addEventListener('click', onCancel);
+    });
+}
+
+function showAlert(html) {
+    return new Promise(resolve => {
+        const overlay = document.getElementById('modalOverlay');
+        const body = document.getElementById('modalBody');
+        const btnOk = document.getElementById('modalConfirm');
+        const btnCancel = document.getElementById('modalCancel');
+        body.innerHTML = html;
+        btnCancel.style.display = 'none';
+        overlay.style.display = 'flex';
+
+        function cleanup() {
+            overlay.style.display = 'none';
+            btnOk.removeEventListener('click', onOk);
+            resolve();
+        }
+        function onOk() { cleanup(); }
+        btnOk.addEventListener('click', onOk);
     });
 }

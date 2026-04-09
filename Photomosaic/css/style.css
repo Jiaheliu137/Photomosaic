@@ -691,6 +691,173 @@ body {
     margin-top: 6px;
 }
 
+/* ---- Index mode toggle ---- */
+
+.index-mode-toggle {
+    display: flex;
+    flex: 1;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    overflow: hidden;
+    height: 26px;
+}
+
+.index-mode-btn {
+    flex: 1;
+    border: none;
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+    font-size: 11px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    padding: 0 8px;
+    line-height: 26px;
+}
+
+.index-mode-btn:first-child {
+    border-right: 1px solid var(--border-color);
+}
+
+.index-mode-btn:hover:not(.active) {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.index-mode-btn.active {
+    background: var(--accent);
+    color: #fff;
+}
+
+/* ---- Cross-library index dropdown ---- */
+
+.cross-lib-dropdown {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+}
+
+.cross-lib-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    font-size: 11px;
+    color: var(--text-primary);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    height: 26px;
+    box-sizing: border-box;
+}
+
+.cross-lib-trigger::after {
+    content: '▾';
+    margin-left: 4px;
+    font-size: 10px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.cross-lib-trigger:hover {
+    border-color: var(--accent);
+}
+
+.cross-lib-dropdown.disabled .cross-lib-trigger {
+    color: var(--text-muted);
+    cursor: default;
+    pointer-events: none;
+}
+
+.cross-lib-dropdown.disabled .cross-lib-trigger::after {
+    display: none;
+}
+
+.cross-lib-menu {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    margin-top: 2px;
+    padding: 4px 0;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    z-index: 100;
+    max-height: 160px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.cross-lib-menu::-webkit-scrollbar {
+    width: 4px;
+}
+
+.cross-lib-menu::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 2px;
+}
+
+.cross-lib-menu.open {
+    display: block;
+}
+
+.cross-lib-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    font-size: 11px;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.cross-lib-item:hover {
+    background: var(--bg-tertiary);
+}
+
+.cross-lib-item input[type="checkbox"] {
+    margin: 0;
+    accent-color: var(--accent);
+}
+
+.cross-lib-item .cross-lib-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.cross-lib-item .cross-lib-tag {
+    font-size: 9px;
+    color: var(--accent);
+    flex-shrink: 0;
+}
+
+.cross-lib-item .cross-lib-count {
+    color: var(--text-muted);
+    font-size: 10px;
+    flex-shrink: 0;
+    margin-left: auto;
+}
+
+
+.cross-lib-select-all {
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 4px;
+    margin-bottom: 2px;
+    font-size: 10px;
+    color: var(--text-secondary);
+}
+
 /* ---- Saved indicator on sidebar ---- */
 
 .sidebar-item.saved .sidebar-thumb::before {

@@ -370,7 +370,15 @@ function compositeToOutput(baseSource, meta, blendAlpha) {
 async function ensureTileIndex(shapeStr, tileAspect, shouldCancel) {
     await syncLibraryId();
     const mode = getIndexMode();
-    const memKey = mode === 'palette' ? 'palette' : shapeStr;
+    const baseKey = mode === 'palette' ? 'palette' : shapeStr;
+
+    // Include selection state in cache key to avoid stale KD-Trees
+    const externalPaths = mode === 'sampled' ? getSelectedExternalPaths() : [];
+    const useLocal = mode === 'sampled' ? isLocalIndexSelected() : true;
+    const selectionSuffix = mode === 'sampled'
+        ? '|local=' + (useLocal ? '1' : '0') + (externalPaths.length > 0 ? '|' + externalPaths.slice().sort().join('|') : '')
+        : '';
+    const memKey = baseKey + selectionSuffix;
 
     if (tileIndexCache.has(memKey)) {
         const cached = tileIndexCache.get(memKey);
@@ -380,44 +388,56 @@ async function ensureTileIndex(shapeStr, tileAspect, shouldCancel) {
         return { tiles: cachedTiles, kdRoot: cachedKdRoot };
     }
 
-    if (mode === 'sampled') {
-        const diskTiles = tryLoadDiskCache(shapeStr);
-        if (diskTiles) {
-            setProgress(0, 1, '从缓存加载索引...');
-            cachedTiles = diskTiles;
-            libraryTileCount = cachedTiles.length;
+    // Load or build local tiles
+    let localTiles = null;
 
-            setProgress(0, 1, '构建 KD-Tree 空间索引...');
-            cachedKdRoot = buildKDTree(cachedTiles.map((_, i) => i), cachedTiles, 0);
-            tileIndexCache.set(memKey, { tiles: cachedTiles, kdRoot: cachedKdRoot });
-            return { tiles: cachedTiles, kdRoot: cachedKdRoot };
+    if (mode === 'palette') {
+        setProgress(0, 1, '获取图库列表...');
+        const allItems = filterItemsByExcludedFolders(await eagle.item.getAll());
+        localTiles = buildTileDatabasePalette(allItems, setProgress);
+    } else if (useLocal) {
+        localTiles = tryLoadDiskCache(shapeStr);
+        if (localTiles) {
+            setProgress(0, 1, '从缓存加载索引...');
+        } else {
+            setProgress(0, 1, '获取图库列表...');
+            const allItems = filterItemsByExcludedFolders(await eagle.item.getAll());
+            localTiles = await buildTileDatabaseSampled(allItems, tileAspect, setProgress, shouldCancel);
+            saveDiskCache(shapeStr, localTiles);
+        }
+    } else {
+        localTiles = [];
+    }
+
+    // Merge external indexes (sampled mode only)
+    let mergedTiles = localTiles;
+    if (mode === 'sampled' && externalPaths.length > 0) {
+        mergedTiles = localTiles.slice();
+        let extTotal = 0;
+        for (const extPath of externalPaths) {
+            const extTiles = loadExternalIndex(extPath);
+            if (extTiles) {
+                const valid = extTiles.filter(t => t.lab && t.labs);
+                mergedTiles = mergedTiles.concat(valid);
+                extTotal += valid.length;
+            }
+        }
+        if (extTotal > 0) {
+            setProgress(0, 1, `合并完成: ${localTiles.length} + ${extTotal} = ${mergedTiles.length} 张瓦片`);
         }
     }
 
-    setProgress(0, 1, '获取图库列表...');
-    const allItems = filterItemsByExcludedFolders(await eagle.item.getAll());
-
-    let newTiles;
-    if (mode === 'palette') {
-        newTiles = buildTileDatabasePalette(allItems, setProgress);
-    } else {
-        newTiles = await buildTileDatabaseSampled(allItems, tileAspect, setProgress, shouldCancel);
-    }
-
-    if (newTiles.length < 20) {
-        alert(`仅索引到 ${newTiles.length} 张有效瓦片图，效果可能较差`);
+    if (mergedTiles.length < 20) {
+        showAlert(`仅索引到 ${mergedTiles.length} 张有效瓦片图，效果可能较差`);
     }
 
     setProgress(0, 1, '构建 KD-Tree 空间索引...');
-    const newKdRoot = buildKDTree(newTiles.map((_, i) => i), newTiles, 0);
+    const newKdRoot = buildKDTree(mergedTiles.map((_, i) => i), mergedTiles, 0);
 
-    cachedTiles = newTiles;
+    cachedTiles = mergedTiles;
     cachedKdRoot = newKdRoot;
     libraryTileCount = cachedTiles.length;
     tileIndexCache.set(memKey, { tiles: cachedTiles, kdRoot: cachedKdRoot });
-    if (mode === 'sampled') {
-        saveDiskCache(shapeStr, cachedTiles);
-    }
 
     return { tiles: cachedTiles, kdRoot: cachedKdRoot };
 }
