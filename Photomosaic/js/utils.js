@@ -1,5 +1,6 @@
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 const MAX_CANVAS_DIM = 16384;
 
@@ -48,14 +49,14 @@ function setProgress(current, total, text) {
 }
 
 // Temp file management for batch memory control
-function ensureTempDir(pluginPath) {
-    const tempDir = path.join(pluginPath, 'temp');
+function ensureTempDir() {
+    const tempDir = path.join(os.tmpdir(), 'photomosaic_temp');
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
     return tempDir;
 }
 
-function saveCanvasToTemp(canvas, itemId, pluginPath) {
-    const tempDir = ensureTempDir(pluginPath);
+function saveCanvasToTemp(canvas, itemId) {
+    const tempDir = ensureTempDir();
     const filePath = path.join(tempDir, `base_${itemId}_${Date.now()}.png`);
     return new Promise((resolve) => {
         canvas.toBlob((blob) => {
@@ -69,7 +70,7 @@ function saveCanvasToTemp(canvas, itemId, pluginPath) {
     });
 }
 
-function cleanupTempFiles(queue, pluginPath) {
+function cleanupTempFiles(queue) {
     for (const item of queue) {
         if (item.tempBasePath) {
             try { fs.unlinkSync(item.tempBasePath); } catch {}

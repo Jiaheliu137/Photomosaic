@@ -106,7 +106,7 @@ async function generateForItem(index, tiles, kdRoot, plugin, progressPrefix) {
     updateSaveButtonState();
     setTimeout(async () => {
         if (oldTemp) { try { fs.unlinkSync(oldTemp); } catch {} }
-        qItem.tempBasePath = await saveCanvasToTemp(result.baseCanvas, qItem.id, plugin.path);
+        qItem.tempBasePath = await saveCanvasToTemp(result.baseCanvas, qItem.id);
         qItem._savingTemp = false;
         updateSaveButtonState();
     }, 100);
@@ -664,7 +664,7 @@ eagle.onPluginCreate(async (plugin) => {
             const dataUrl = canvas.toDataURL('image/png');
             const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
 
-            const tempDir = ensureTempDir(plugin.path);
+            const tempDir = ensureTempDir();
             const timestamp = Date.now();
             const tempFile = path.join(tempDir, `photomosaic_${timestamp}.png`);
             fs.writeFileSync(tempFile, Buffer.from(base64Data, 'base64'));
@@ -719,7 +719,7 @@ eagle.onPluginCreate(async (plugin) => {
         try {
             btnSaveAll.disabled = true;
             const folderId = await ensureMosaicFolder();
-            const tempDir = ensureTempDir(plugin.path);
+            const tempDir = ensureTempDir();
 
             for (let i = 0; i < unsaved.length; i++) {
                 const item = unsaved[i];
@@ -768,7 +768,7 @@ eagle.onPluginCreate(async (plugin) => {
 
     // Cleanup on exit
     eagle.onPluginBeforeExit(() => {
-        if (batchQueue.length > 0) cleanupTempFiles(batchQueue, plugin.path);
+        if (batchQueue.length > 0) cleanupTempFiles(batchQueue);
     });
 });
 
