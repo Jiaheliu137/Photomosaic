@@ -344,22 +344,17 @@ async function generateMosaic(targetImg, tiles, kdRoot, gridCols, tileW, tileH, 
 // Composite: apply color overlay → output canvas
 // ============================================================
 
-function compositeToOutput(baseSource, meta, blendAlpha) {
+function compositeToOutput(baseSource, meta, blendAlpha, targetImg) {
     const outputCanvas = document.getElementById('outputCanvas');
     outputCanvas.width = meta.width;
     outputCanvas.height = meta.height;
     const ctx = outputCanvas.getContext('2d');
     ctx.drawImage(baseSource, 0, 0);
 
-    if (blendAlpha > 0) {
-        for (let row = 0; row < meta.gridRows; row++) {
-            for (let col = 0; col < meta.gridCols; col++) {
-                const idx = row * meta.gridCols + col;
-                const rgb = meta.gridRgbs[idx];
-                ctx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${blendAlpha})`;
-                ctx.fillRect(col * meta.tileW, row * meta.tileH, meta.tileW, meta.tileH);
-            }
-        }
+    if (blendAlpha > 0 && targetImg) {
+        ctx.globalAlpha = blendAlpha;
+        ctx.drawImage(targetImg, 0, 0, meta.width, meta.height);
+        ctx.globalAlpha = 1;
     }
 }
 

@@ -28,16 +28,20 @@ async function generateForItem(index, tiles, kdRoot, plugin, progressPrefix) {
 
     const targetImg = await loadImage('file:///' + qItem.filePath.replace(/\\/g, '/'));
     qItem.sourceAspect = targetImg.height / targetImg.width;
+    qItem._targetImg = targetImg;
     targetImgAspect = qItem.sourceAspect;
 
     const fidelityAlpha = settings.fidelity / 100;
     let liveGridRgbs = null;
     let liveGridCols = 0;
+    let liveOutputW = 0, liveOutputH = 0;
 
     const onVisualUpdate = {
         onPlaceholderReady(gridRgbs, gridCols, gridRows, tileW, tileH) {
             liveGridRgbs = gridRgbs;
             liveGridCols = gridCols;
+            liveOutputW = gridCols * tileW;
+            liveOutputH = gridRows * tileH;
             qItem._liveGridRgbs = gridRgbs;
             qItem._liveGridCols = gridCols;
             qItem._liveGridRows = gridRows;
@@ -46,8 +50,8 @@ async function generateForItem(index, tiles, kdRoot, plugin, progressPrefix) {
             qItem._liveRenderedRow = -1;
             if (activeIndex !== index) return;
             const outputCanvas = document.getElementById('outputCanvas');
-            outputCanvas.width = gridCols * tileW;
-            outputCanvas.height = gridRows * tileH;
+            outputCanvas.width = liveOutputW;
+            outputCanvas.height = liveOutputH;
             const ctx = outputCanvas.getContext('2d');
             for (let row = 0; row < gridRows; row++) {
                 for (let col = 0; col < gridCols; col++) {
@@ -68,13 +72,15 @@ async function generateForItem(index, tiles, kdRoot, plugin, progressPrefix) {
             const sy = row * tileH;
             const w = gridCols * tileW;
             ctx.drawImage(baseCanvas, 0, sy, w, tileH, 0, sy, w, tileH);
-            if (fidelityAlpha > 0 && liveGridRgbs) {
-                for (let col = 0; col < gridCols; col++) {
-                    const idx = row * liveGridCols + col;
-                    const rgb = liveGridRgbs[idx];
-                    ctx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${fidelityAlpha})`;
-                    ctx.fillRect(col * tileW, sy, tileW, tileH);
-                }
+            if (fidelityAlpha > 0) {
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(0, sy, w, tileH);
+                ctx.clip();
+                ctx.globalAlpha = fidelityAlpha;
+                ctx.drawImage(targetImg, 0, 0, liveOutputW, liveOutputH);
+                ctx.globalAlpha = 1;
+                ctx.restore();
             }
         }
     };
@@ -726,7 +732,11 @@ eagle.onPluginCreate(async (plugin) => {
                 setProgress(i, unsaved.length, `保存 ${i + 1}/${unsaved.length}: ${item.name}`);
 
                 const baseImg = await loadImage('file:///' + item.tempBasePath.replace(/\\/g, '/'));
-                compositeToOutput(baseImg, item, item.settings.fidelity / 100);
+                let targetImg = item._targetImg;
+                if (!targetImg && item.filePath) {
+                    targetImg = await loadImage('file:///' + item.filePath.replace(/\\/g, '/'));
+                }
+                compositeToOutput(baseImg, item, item.settings.fidelity / 100, targetImg);
 
                 const canvas = document.getElementById('outputCanvas');
                 const dataUrl = canvas.toDataURL('image/png');

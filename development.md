@@ -249,23 +249,23 @@ for each row:
 
 ---
 
-## 色彩还原度叠色
+## 色彩还原度（原图叠加）
 
 ### 原理
 
-纯瓦片马赛克远看会偏色（瓦片的平均色无法完美匹配目标色）。在每个瓦片上覆盖一层半透明的目标颜色，提升远看时的色彩还原度。
+纯瓦片马赛克远看会偏色（瓦片的平均色无法完美匹配目标色）。在瓦片层上叠加一层半透明的**原图**，提升远看时的色彩还原度。fidelity=0 时是纯瓦片马赛克，fidelity=100 时完全显示原图。
 
 ### 实现
 
 ```
-fidelityAlpha = settings.fidelity / 100  (0~0.5)
+fidelityAlpha = settings.fidelity / 100  (0~1.0)
 
-for each cell:
-    ctx.fillStyle = rgba(targetR, targetG, targetB, fidelityAlpha)
-    ctx.fillRect(cellX, cellY, tileW, tileH)
+ctx.globalAlpha = fidelityAlpha
+ctx.drawImage(targetImg, 0, 0, outputWidth, outputHeight)
+ctx.globalAlpha = 1
 ```
 
-叠色在逐行渲染回调中 per-row 应用。生成完成后调节 fidelity 值，直接用 `compositeToOutput` 重新合成，无需重新生成。
+逐行渲染时通过 `clip()` 限制叠加区域为已渲染行，避免覆盖下方色块占位区。生成完成后调节 fidelity 值，直接用 `compositeToOutput` 重新合成，无需重新生成。
 
 ---
 

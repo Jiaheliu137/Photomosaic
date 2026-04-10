@@ -529,14 +529,17 @@ async function onSidebarItemClick(index) {
             ctx.drawImage(liveBaseCanvas, 0, 0, liveBaseCanvas.width, h, 0, 0, liveBaseCanvas.width, h);
 
             const fAlpha = item.settings.fidelity / 100;
-            if (fAlpha > 0 && rgbs && gc) {
-                for (let r = 0; r <= renderedRow; r++) {
-                    for (let c = 0; c < gc; c++) {
-                        const rgb = rgbs[r * gc + c];
-                        ctx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${fAlpha})`;
-                        ctx.fillRect(c * tw, r * th, tw, th);
-                    }
-                }
+            if (fAlpha > 0 && item._targetImg) {
+                const outW = outputCanvas.width, outH = outputCanvas.height;
+                const clipH = (renderedRow + 1) * th;
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(0, 0, outW, clipH);
+                ctx.clip();
+                ctx.globalAlpha = fAlpha;
+                ctx.drawImage(item._targetImg, 0, 0, outW, outH);
+                ctx.globalAlpha = 1;
+                ctx.restore();
             }
         }
 
@@ -571,7 +574,13 @@ async function showResult(item, index) {
         cachedBase = await loadImage('file:///' + item.tempBasePath.replace(/\\/g, '/'));
         cachedBaseIndex = index;
     }
-    compositeToOutput(cachedBase, item, item.settings.fidelity / 100);
+    // Load target image for fidelity overlay
+    let targetImg = item._targetImg;
+    if (!targetImg && item.filePath) {
+        targetImg = await loadImage('file:///' + item.filePath.replace(/\\/g, '/'));
+        item._targetImg = targetImg;
+    }
+    compositeToOutput(cachedBase, item, item.settings.fidelity / 100, targetImg);
     if (viewer) viewer.softFit();
 }
 
