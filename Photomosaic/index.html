@@ -6,9 +6,12 @@
     <script>
     (function() {
         if (typeof eagle === 'undefined' || !eagle.app) return;
+        var map = { LIGHT:'theme-light', LIGHTGRAY:'theme-lightgray', GRAY:'theme-gray', DARK:'theme-dark', BLUE:'theme-blue', PURPLE:'theme-purple' };
         var colors = { LIGHT:'#ffffff', LIGHTGRAY:'#e3e4e6', GRAY:'#37383c', DARK:'#18191c', BLUE:'#0d1630', PURPLE:'#1c1424' };
         var t = eagle.app.theme;
+        var cls = map[t] || (eagle.app.isDarkColors() ? 'theme-gray' : 'theme-light');
         var bg = colors[t] || (eagle.app.isDarkColors() ? '#37383c' : '#ffffff');
+        document.documentElement.classList.add(cls);
         document.documentElement.style.backgroundColor = bg;
         document.documentElement.style.setProperty('--initial-bg', bg);
     })();

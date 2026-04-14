@@ -13,8 +13,8 @@ function syncEagleTheme() {
     if (!themeClass) {
         themeClass = eagle.app.isDarkColors() ? 'theme-gray' : 'theme-light';
     }
-    ALL_THEMES.forEach(t => document.body.classList.remove(t));
-    document.body.classList.add(themeClass);
+    ALL_THEMES.forEach(t => document.documentElement.classList.remove(t));
+    document.documentElement.classList.add(themeClass);
 }
 
 // Single-item generation
